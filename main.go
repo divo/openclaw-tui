@@ -35,10 +35,15 @@ const (
 	modeInsert
 )
 
+type taskItem struct {
+	priority int
+	text     string
+}
+
 type refreshResult struct {
 	statusRaw   string
 	sessionsRaw string
-	taskItems   []string
+	taskItems   []taskItem
 	errors      []string
 	at          time.Time
 }
@@ -56,7 +61,7 @@ type model struct {
 	status      string
 	lastRefresh time.Time
 
-	projectItems    []string
+	projectItems    []taskItem
 	sessionItems    []string
 	connectionItems []string
 	errors          []string
@@ -78,7 +83,7 @@ func initialModel() model {
 	return model{
 		status:          "Booting",
 		lastRefresh:     time.Now(),
-		projectItems:    []string{"Loading tasks..."},
+		projectItems:    []taskItem{{priority: 2, text: "Loading tasks..."}},
 		sessionItems:    []string{"Loading sessions..."},
 		connectionItems: []string{"Loading channels..."},
 		chatLines: []string{
@@ -120,7 +125,7 @@ func runRefresh() tea.Msg {
 
 	result.taskItems = readTaskItems(tasksPath, 12)
 	if len(result.taskItems) == 0 {
-		result.taskItems = []string{"No open tasks found"}
+		result.taskItems = []taskItem{{priority: 3, text: "No open tasks found"}}
 	}
 
 	return refreshMsg(result)
@@ -357,7 +362,7 @@ func (m model) View() string {
 	sessionsPane := paneBox("Sessions", m.focus == paneSessions, leftW, sessionsH, renderList(m.sessionItems, m.sessionsOffset, sessionsH-2))
 	leftTop := lipgloss.JoinVertical(lipgloss.Left, statusPane, sessionsPane)
 
-	tasksPane := paneBox("Tasks", m.focus == paneTasks, rightW, topH, renderList(m.projectItems, m.tasksOffset, topH-2))
+	tasksPane := paneBox("Tasks", m.focus == paneTasks, rightW, topH, renderTasks(m.projectItems, m.tasksOffset, topH-2))
 	top := lipgloss.JoinHorizontal(lipgloss.Top, leftTop, tasksPane)
 
 	chatBody := renderChat(m.chatLines, m.chatOffset, m.chatInput, m.chatSending, m.mode, bottomH-2)
@@ -398,6 +403,39 @@ func renderList(items []string, offset, height int) string {
 	for _, it := range items[offset:end] {
 		out = append(out, "- "+compactLine(it, 100))
 	}
+	return strings.Join(out, "\n")
+}
+
+func renderTasks(items []taskItem, offset, height int) string {
+	if height < 1 {
+		return ""
+	}
+	if len(items) == 0 {
+		return "(empty)"
+	}
+	if offset > len(items)-1 {
+		offset = max(0, len(items)-1)
+	}
+	end := min(len(items), offset+height)
+	out := make([]string, 0, height)
+
+	p1 := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	p2 := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	p3 := lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
+
+	for _, it := range items[offset:end] {
+		badgeText := fmt.Sprintf("P%d", it.priority)
+		switch it.priority {
+		case 1:
+			badgeText = p1.Render(badgeText)
+		case 2:
+			badgeText = p2.Render(badgeText)
+		default:
+			badgeText = p3.Render(badgeText)
+		}
+		out = append(out, fmt.Sprintf("☐ %s %s", badgeText, compactLine(it.text, 95)))
+	}
+
 	return strings.Join(out, "\n")
 }
 
@@ -490,22 +528,62 @@ func parseSessionsCompact(raw string, limit int) []string {
 	return out
 }
 
-func readTaskItems(path string, limit int) []string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return []string{"Unable to read TASKS.md"}
-	}
-	var out []string
-	for _, line := range strings.Split(string(b), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "- [ ]") {
-			out = append(out, compactLine(trimmed, 100))
-			if len(out) >= limit {
-				break
+func parseTaskLine(line string) taskItem {
+	// expected format: - [ ] [P1] Description -- context | logged: ...
+	item := taskItem{priority: 3, text: compactLine(line, 100)}
+
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "- [ ]"))
+	if strings.HasPrefix(rest, "[P") {
+		closeIdx := strings.Index(rest, "]")
+		if closeIdx > 2 {
+			p := rest[2:closeIdx]
+			if p == "1" || p == "2" || p == "3" {
+				item.priority = int(p[0] - '0')
 			}
+			rest = strings.TrimSpace(rest[closeIdx+1:])
 		}
 	}
-	return out
+
+	if i := strings.Index(rest, " -- "); i >= 0 {
+		rest = rest[:i]
+	}
+	if i := strings.Index(rest, " | "); i >= 0 {
+		rest = rest[:i]
+	}
+
+	if strings.TrimSpace(rest) != "" {
+		item.text = strings.TrimSpace(rest)
+	}
+	return item
+}
+
+func readTaskItems(path string, limit int) []taskItem {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return []taskItem{{priority: 1, text: "Unable to read TASKS.md"}}
+	}
+
+	var tasks []taskItem
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "- [ ]") {
+			continue
+		}
+		t := parseTaskLine(trimmed)
+		tasks = append(tasks, t)
+	}
+
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].priority == tasks[j].priority {
+			return tasks[i].text < tasks[j].text
+		}
+		return tasks[i].priority < tasks[j].priority
+	})
+
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
+	}
+	return tasks
 }
 
 func trimLastRune(s string) string {
