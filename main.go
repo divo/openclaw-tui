@@ -35,6 +35,26 @@ const (
 	modeEdit
 )
 
+// connState tracks whether we have an active session to send to.
+type connState int
+
+const (
+	connConnecting connState = iota
+	connConnected
+	connDisconnected
+)
+
+func (c connState) String() string {
+	switch c {
+	case connConnecting:
+		return "connecting"
+	case connConnected:
+		return "connected"
+	default:
+		return "disconnected"
+	}
+}
+
 type taskItem struct {
 	priority int
 	text     string
@@ -50,9 +70,21 @@ type refreshResult struct {
 
 type refreshMsg refreshResult
 
+type sessionDiscoverMsg struct {
+	sessionKey string
+	err        error
+}
+
 type chatReplyMsg struct {
-	reply string
-	err   error
+	reply      string
+	err        error
+	retryCount int
+	prompt     string // original prompt, so we can retry
+}
+
+type retryConnectMsg struct {
+	prompt     string
+	retryCount int
 }
 
 type model struct {
@@ -60,6 +92,10 @@ type model struct {
 	height      int
 	status      string
 	lastRefresh time.Time
+
+	// session / connection
+	sessionKey string
+	conn       connState
 
 	projectItems    []taskItem
 	sessionItems    []string
@@ -69,6 +105,7 @@ type model struct {
 	chatLines   []string
 	chatInput   string
 	chatSending bool
+	pendingMsg  string // queued while connecting
 
 	focus pane
 	mode  mode
@@ -83,6 +120,7 @@ func initialModel() model {
 	return model{
 		status:          "Booting",
 		lastRefresh:     time.Now(),
+		conn:            connConnecting,
 		projectItems:    []taskItem{{priority: 2, text: "Loading tasks..."}},
 		sessionItems:    []string{"Loading sessions..."},
 		connectionItems: []string{"Loading channels..."},
@@ -98,8 +136,56 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(refreshCmd(), tickCmd())
+	return tea.Batch(discoverSessionCmd(), refreshCmd(), tickCmd())
 }
+
+// ── Session Discovery ────────────────────────────────────────────────────────
+
+func discoverSessionCmd() tea.Cmd {
+	return func() tea.Msg {
+		out, err := runOpenClaw(10*time.Second, "sessions", "list")
+		if err != nil {
+			return sessionDiscoverMsg{err: fmt.Errorf("sessions list: %w", err)}
+		}
+		key := parseMainSessionKey(out)
+		if key == "" {
+			return sessionDiscoverMsg{err: fmt.Errorf("no main session found")}
+		}
+		return sessionDiscoverMsg{sessionKey: key}
+	}
+}
+
+// parseMainSessionKey finds the primary (non-cron) direct session key.
+// Expected line format:
+//
+//	direct agent:main:main   just now  ...
+func parseMainSessionKey(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[0] != "direct" {
+			continue
+		}
+		key := fields[1]
+		// Skip cron sub-sessions; prefer the bare main session.
+		if strings.Contains(key, ":cron:") {
+			continue
+		}
+		return key
+	}
+	return ""
+}
+
+// scheduleReconnect queues a session re-discover after a short delay.
+func scheduleReconnect(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return discoverSessionCmd()()
+	})
+}
+
+// ── Tick / Refresh ───────────────────────────────────────────────────────────
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return runRefresh() })
@@ -132,15 +218,19 @@ func runRefresh() tea.Msg {
 	return refreshMsg(result)
 }
 
-func sendChatCmd(prompt string) tea.Cmd {
+// ── Chat Send ────────────────────────────────────────────────────────────────
+
+func sendChatCmd(sessionKey, prompt string, retryCount int) tea.Cmd {
 	return func() tea.Msg {
-		reply, err := runOpenClaw(45*time.Second, "agent", "--session-id", "main", "--message", prompt)
+		reply, err := runOpenClaw(45*time.Second, "agent", "--session-id", sessionKey, "--message", prompt)
 		if err != nil {
-			return chatReplyMsg{err: err}
+			return chatReplyMsg{err: err, retryCount: retryCount, prompt: prompt}
 		}
 		return chatReplyMsg{reply: strings.TrimSpace(reply)}
 	}
 }
+
+// ── OpenClaw binary ──────────────────────────────────────────────────────────
 
 func openclawBinary() string {
 	candidates := []string{"openclaw", "/home/divo/.npm-global/bin/openclaw"}
@@ -176,8 +266,35 @@ func runOpenClaw(timeout time.Duration, args ...string) (string, error) {
 	return text, nil
 }
 
+// ── Update ───────────────────────────────────────────────────────────────────
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	// ── Session discovery result ─────────────────────────────────────────────
+	case sessionDiscoverMsg:
+		if msg.err != nil {
+			m.conn = connDisconnected
+			m.errors = append(m.errors, "session: "+msg.err.Error())
+			// Retry discovery in 3s.
+			return m, scheduleReconnect(3 * time.Second)
+		}
+		if m.sessionKey != msg.sessionKey {
+			// New or changed session — announce it.
+			m.chatLines = append(m.chatLines, fmt.Sprintf("⚡ connected → %s", msg.sessionKey))
+		}
+		m.sessionKey = msg.sessionKey
+		m.conn = connConnected
+		// If we had a message queued while reconnecting, send it now.
+		if m.pendingMsg != "" {
+			pending := m.pendingMsg
+			m.pendingMsg = ""
+			m.chatSending = true
+			return m, sendChatCmd(m.sessionKey, pending, 0)
+		}
+		return m, nil
+
+	// ── Refresh result ───────────────────────────────────────────────────────
 	case refreshMsg:
 		m.lastRefresh = msg.at
 		m.status = "Live"
@@ -191,11 +308,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.sessionItems) == 0 {
 			m.sessionItems = []string{"No sessions returned"}
 		}
+		// If session went missing in the latest refresh, trigger re-discover.
+		if m.conn == connConnected && m.sessionKey != "" {
+			if parseMainSessionKey(msg.sessionsRaw) == "" {
+				m.conn = connDisconnected
+				m.chatLines = append(m.chatLines, "⚠ session lost — reconnecting...")
+				return m, tea.Batch(tickCmd(), discoverSessionCmd())
+			}
+		}
 		return m, tickCmd()
 
+	// ── Chat reply ───────────────────────────────────────────────────────────
 	case chatReplyMsg:
 		m.chatSending = false
 		if msg.err != nil {
+			if msg.retryCount < 3 {
+				// Treat as a connection problem — re-discover and retry.
+				m.conn = connDisconnected
+				m.chatLines = append(m.chatLines, fmt.Sprintf("⚠ send failed (retry %d/3) — reconnecting...", msg.retryCount+1))
+				m.pendingMsg = msg.prompt
+				m.chatSending = true // keep UI in "sending" state
+				return m, discoverSessionCmd()
+			}
 			m.chatLines = append(m.chatLines, "Amerish [error]: "+msg.err.Error())
 			return m, nil
 		}
@@ -211,11 +345,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	// ── Window resize ────────────────────────────────────────────────────────
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
 
+	// ── Keyboard ─────────────────────────────────────────────────────────────
 	case tea.KeyMsg:
 		if m.mode == modeEdit {
 			switch msg.String() {
@@ -233,7 +369,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatLines = append(m.chatLines, "You: "+prompt)
 				m.chatInput = ""
 				m.chatSending = true
-				return m, sendChatCmd(prompt)
+
+				if m.conn != connConnected || m.sessionKey == "" {
+					// Not connected yet — queue the message and kick off discovery.
+					m.pendingMsg = prompt
+					m.chatLines = append(m.chatLines, "⏳ not connected — queued, reconnecting...")
+					return m, discoverSessionCmd()
+				}
+				return m, sendChatCmd(m.sessionKey, prompt, 0)
+
 			case "backspace", "ctrl+h":
 				m.chatInput = trimLastRune(m.chatInput)
 				return m, nil
@@ -250,7 +394,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			m.status = "Refreshing..."
-			return m, refreshCmd()
+			return m, tea.Batch(refreshCmd(), discoverSessionCmd())
 		case "i":
 			if m.focus == paneChat {
 				m.mode = modeEdit
@@ -286,6 +430,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	return m, nil
 }
+
+// ── Focus helpers ────────────────────────────────────────────────────────────
 
 func focusLeft(p pane) pane {
 	switch p {
@@ -342,6 +488,8 @@ func (m *model) scrollFocused(delta int) {
 	}
 }
 
+// ── View ─────────────────────────────────────────────────────────────────────
+
 func (m model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
@@ -355,7 +503,17 @@ func (m model) View() string {
 	if m.mode == modeEdit {
 		modeLabel = "EDIT"
 	}
-	header := headerStyle.Render(fmt.Sprintf("OpenClaw Ops TUI | %s | status=%s | refreshed=%s", modeLabel, m.status, m.lastRefresh.Format("15:04:05")))
+
+	connLabel := connStateLabel(m.conn)
+	sessionLabel := m.sessionKey
+	if sessionLabel == "" {
+		sessionLabel = "—"
+	}
+
+	header := headerStyle.Render(fmt.Sprintf(
+		"OpenClaw TUI | %s | %s | session=%s | refreshed=%s",
+		modeLabel, connLabel, sessionLabel, m.lastRefresh.Format("15:04:05"),
+	))
 
 	bodyH := max(10, m.height-7)
 	topH := max(6, bodyH/2)
@@ -375,7 +533,7 @@ func (m model) View() string {
 	chatBody := renderChat(m.chatLines, m.chatOffset, m.chatInput, m.chatSending, m.mode, bottomH-2)
 	chatPane := paneBox("Chat", m.focus == paneChat, m.width, bottomH, chatBody)
 
-	footer := muted.Render("Modes: MOVE(hjkl focus, J/K scroll, Ctrl+d/u page) • EDIT(i in Chat, Enter send, Esc back) • r refresh • q quit")
+	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, r refresh, q quit | EDIT: i (in Chat), Enter send, Esc back")
 
 	parts := []string{header, top, chatPane}
 	if len(m.errors) > 0 {
@@ -384,6 +542,19 @@ func (m model) View() string {
 	parts = append(parts, footer)
 	return strings.Join(parts, "\n\n")
 }
+
+func connStateLabel(c connState) string {
+	switch c {
+	case connConnected:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("46")).Render("● connected")
+	case connConnecting:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("◌ connecting")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("✗ disconnected")
+	}
+}
+
+// ── Render helpers ────────────────────────────────────────────────────────────
 
 func paneBox(title string, focused bool, width, height int, content string) string {
 	b := lipgloss.NormalBorder()
@@ -475,6 +646,8 @@ func renderChat(lines []string, offset int, input string, sending bool, md mode,
 	return strings.Join(append(visible, prefix+input), "\n")
 }
 
+// ── Parsers ───────────────────────────────────────────────────────────────────
+
 func parseConnections(statusRaw string) []string {
 	if strings.TrimSpace(statusRaw) == "" {
 		return nil
@@ -536,7 +709,6 @@ func parseSessionsCompact(raw string, limit int) []string {
 }
 
 func parseTaskLine(line string) taskItem {
-	// expected format: - [ ] [P1] Description -- context | logged: ...
 	item := taskItem{priority: 3, text: compactLine(line, 100)}
 
 	rest := strings.TrimSpace(strings.TrimPrefix(line, "- [ ]"))
@@ -592,6 +764,8 @@ func readTaskItems(path string, limit int) []taskItem {
 	}
 	return tasks
 }
+
+// ── String utilities ──────────────────────────────────────────────────────────
 
 func trimLastRune(s string) string {
 	if s == "" {
