@@ -82,11 +82,7 @@ func runRefresh() tea.Msg {
 	}
 	result.sessionsRaw = sessionsOut
 
-	subagentsOut, err := runCommand(4*time.Second, "openclaw", "subagents", "list")
-	if err != nil {
-		result.errors = append(result.errors, "subagents: "+err.Error())
-	}
-	result.subagentsRaw = subagentsOut
+	result.subagentsRaw = sessionsOut
 
 	result.taskItems = readTaskItems(tasksPath, 8)
 	if len(result.taskItems) == 0 {
@@ -121,7 +117,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projectItems = msg.taskItems
 		m.connectionItems = parseConnections(msg.statusRaw)
 		m.sessionItems = parseRows(msg.sessionsRaw, 8)
-		m.subagentItems = parseRows(msg.subagentsRaw, 8)
+		m.subagentItems = parseSubagentRows(msg.subagentsRaw, 8)
 
 		if len(m.connectionItems) == 0 {
 			m.connectionItems = []string{"No channel data"}
@@ -280,6 +276,30 @@ func parseRows(raw string, limit int) []string {
 		if len(out) >= limit {
 			break
 		}
+	}
+	return out
+}
+
+func parseSubagentRows(raw string, limit int) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []string
+	for _, r := range strings.Split(raw, "\n") {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		lower := strings.ToLower(r)
+		if strings.Contains(lower, "sub-agent") || strings.Contains(lower, "subagent") {
+			out = append(out, r)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return []string{"No sub-agents found"}
 	}
 	return out
 }
