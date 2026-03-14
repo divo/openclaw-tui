@@ -18,10 +18,19 @@ func ParseMainSessionKey(raw string) string {
 		if len(fields) < 2 {
 			continue
 		}
-		if fields[0] != "direct" {
+
+		kindIdx := 0
+		if fields[0] == "-" {
+			kindIdx = 1
+		}
+		if kindIdx+1 >= len(fields) {
 			continue
 		}
-		key := fields[1]
+		if fields[kindIdx] != "direct" {
+			continue
+		}
+
+		key := fields[kindIdx+1]
 		if strings.Contains(key, ":cron:") {
 			continue
 		}
