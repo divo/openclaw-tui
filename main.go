@@ -236,12 +236,29 @@ func runRefresh() tea.Msg {
 
 func sendChatCmd(sessionKey, prompt string, retryCount int) tea.Cmd {
 	return func() tea.Msg {
-		reply, err := runOpenClaw(45*time.Second, "agent", "--session-id", sessionKey, "--message", prompt)
+		reply, err := runOpenClaw(45*time.Second, "agent", "--session-id", normalizeSessionID(sessionKey), "--message", prompt)
 		if err != nil {
 			return chatReplyMsg{err: err, retryCount: retryCount, prompt: prompt}
 		}
 		return chatReplyMsg{reply: strings.TrimSpace(reply)}
 	}
+}
+
+func normalizeSessionID(sessionKey string) string {
+	key := strings.TrimSpace(sessionKey)
+	if key == "" {
+		return "main"
+	}
+	if strings.HasPrefix(key, "agent:") {
+		parts := strings.Split(key, ":")
+		if len(parts) >= 4 {
+			id := strings.Join(parts[3:], ":")
+			if strings.TrimSpace(id) != "" {
+				return id
+			}
+		}
+	}
+	return key
 }
 
 // ── OpenClaw binary ──────────────────────────────────────────────────────────
