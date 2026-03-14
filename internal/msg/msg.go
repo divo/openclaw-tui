@@ -34,3 +34,5 @@ type ChatReplyMsg struct {
 type UITickMsg struct {
 	At time.Time
 }
+
+type ChatRetryPendingMsg struct{}

@@ -12,7 +12,7 @@ import (
 
 func SendChatCmd(t transport.Transport, sessionKey, prompt string, messageID, attempt int) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		reply, err := t.SendAgent(ctx, sessionKey, prompt)
 		if err != nil {
@@ -32,6 +32,12 @@ func SendChatCmd(t transport.Transport, sessionKey, prompt string, messageID, at
 			MaxAttempt: MaxSendAttempts,
 		}
 	}
+}
+
+func RetryPendingCmd(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return msg.ChatRetryPendingMsg{}
+	})
 }
 
 func UITickCmd() tea.Cmd {

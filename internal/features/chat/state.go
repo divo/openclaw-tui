@@ -8,6 +8,7 @@ import (
 var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const MaxSendAttempts = 3
+const MaxLockAttempts = 20
 
 type State struct {
 	Lines      []string

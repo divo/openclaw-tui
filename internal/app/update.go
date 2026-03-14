@@ -75,6 +75,23 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 		}
 		return m, TickCmd(m.Transport)
 
+	case msg.ChatRetryPendingMsg:
+		if m.ChatPane.PendingMsg == "" {
+			return m, nil
+		}
+		if m.Conn != ConnConnected || m.SessionKey == "" {
+			m.ChatPane.Lines = append(m.ChatPane.Lines, "⏳ waiting for connection before retry...")
+			return m, DiscoverSessionCmd(m.Transport)
+		}
+		m.ChatPane = chat.BeginPendingSend(m.ChatPane)
+		return m, chat.SendChatCmd(
+			m.Transport,
+			m.SessionKey,
+			m.ChatPane.ActivePrompt,
+			m.ChatPane.ActiveMsgID,
+			m.ChatPane.ActiveAttempt,
+		)
+
 	case terminal.EventMsg:
 		return m, terminal.WaitEventCmd(m.TerminalMgr)
 
