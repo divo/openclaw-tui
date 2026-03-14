@@ -14,6 +14,7 @@ type Dimensions struct {
 	SessionsH int
 	RunH      int
 	ChatH     int
+	TerminalH int
 }
 
 func ComputeDimensions(width, height int) Dimensions {
@@ -25,7 +26,8 @@ func ComputeDimensions(width, height int) Dimensions {
 	statusH := max(3, topH/2)
 	sessionsH := topH - statusH
 	runH := 4
-	chatH := max(6, bottomH-runH)
+	terminalH := max(7, bottomH/2)
+	chatH := max(6, bottomH-terminalH-runH)
 
 	return Dimensions{
 		BodyH:     bodyH,
@@ -37,6 +39,7 @@ func ComputeDimensions(width, height int) Dimensions {
 		SessionsH: sessionsH,
 		RunH:      runH,
 		ChatH:     chatH,
+		TerminalH: terminalH,
 	}
 }
 
@@ -66,6 +69,8 @@ func FocusUp(p Pane) Pane {
 		return PaneStatus
 	case PaneChat:
 		return PaneSessions
+	case PaneTerminal:
+		return PaneChat
 	default:
 		return p
 	}
@@ -77,6 +82,8 @@ func FocusDown(p Pane) Pane {
 		return PaneSessions
 	case PaneSessions, PaneTasks:
 		return PaneChat
+	case PaneChat:
+		return PaneTerminal
 	default:
 		return p
 	}

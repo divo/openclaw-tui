@@ -7,6 +7,7 @@ const (
 	PaneSessions
 	PaneTasks
 	PaneChat
+	PaneTerminal
 )
 
 type Mode int

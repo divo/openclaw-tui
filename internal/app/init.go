@@ -7,14 +7,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"openclaw-tui/internal/features/chat"
 	"openclaw-tui/internal/features/tasks"
+	"openclaw-tui/internal/features/terminal"
 	"openclaw-tui/internal/msg"
 	"openclaw-tui/internal/transport"
 )
 
 const refreshInterval = 5 * time.Second
 
-func InitCmds(t transport.Transport) tea.Cmd {
-	return tea.Batch(DiscoverSessionCmd(t), RefreshCmd(t), TickCmd(t), chat.UITickCmd())
+func InitCmds(t transport.Transport, tm *terminal.Manager) tea.Cmd {
+	return tea.Batch(DiscoverSessionCmd(t), RefreshCmd(t), TickCmd(t), chat.UITickCmd(), terminal.WaitEventCmd(tm))
 }
 
 func TickCmd(t transport.Transport) tea.Cmd {

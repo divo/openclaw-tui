@@ -11,6 +11,7 @@ import (
 	"openclaw-tui/internal/features/sessions"
 	"openclaw-tui/internal/features/status"
 	"openclaw-tui/internal/features/tasks"
+	"openclaw-tui/internal/features/terminal"
 	"openclaw-tui/internal/transport"
 	"openclaw-tui/internal/ui"
 )
@@ -53,11 +54,14 @@ type Model struct {
 	SessionsPane sessions.State
 	TasksPane    tasks.State
 	ChatPane     chat.State
+	TerminalPane terminal.State
+	TerminalMgr  *terminal.Manager
 
 	Transport transport.Transport
 }
 
 func NewModel(t transport.Transport) Model {
+	mgr := terminal.NewManager()
 	return Model{
 		Status:       "Booting",
 		LastRefresh:  time.Now(),
@@ -68,6 +72,8 @@ func NewModel(t transport.Transport) Model {
 		SessionsPane: sessions.State{Items: []string{"Loading sessions..."}},
 		TasksPane:    tasks.State{Items: tasks.ReadTaskItems(tasksPath, 12)},
 		ChatPane:     chat.InitialState(),
+		TerminalPane: terminal.InitialState(),
+		TerminalMgr:  mgr,
 		Transport:    t,
 	}
 }
@@ -107,12 +113,16 @@ func (m Model) View() string {
 	chatBody := chat.View(m.ChatPane.Lines, m.ChatPane.Offset, m.ChatPane.Input, m.ChatPane.Sending, m.Mode, dims.ChatH-2)
 	chatPane := ui.PaneBox("Chat", m.Focus == ui.PaneChat, m.Width, dims.ChatH, chatBody)
 
+	terminalBody := terminal.View(m.TerminalPane, dims.TerminalH-2)
+	terminalPane := ui.PaneBox("Terminal", m.Focus == ui.PaneTerminal, m.Width, dims.TerminalH, terminalBody)
+
 	runStatusLine := chat.RunStatusLine(m.ChatPane, m.Mode, m.Conn.String(), m.SessionKey, m.LastRefresh, m.Errors)
+	runStatusLine += " | " + terminal.StatusLine(m.TerminalPane)
 	runStatusPane := ui.PaneBox("Run Status", false, m.Width, dims.RunH, runStatusLine)
 
-	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, r refresh, q quit | EDIT: i (in Chat), Enter send, Esc back")
+	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, n/p term session, x kill, r refresh, q quit | EDIT: i (Chat/Terminal), Enter send/newline, Ctrl+n new terminal, Esc back")
 
-	parts := []string{header, top, chatPane, runStatusPane}
+	parts := []string{header, top, chatPane, terminalPane, runStatusPane}
 	if len(m.Errors) > 0 {
 		parts = append(parts, errorStyle.Render("Errors: "+strings.Join(m.Errors, " | ")))
 	}
@@ -121,5 +131,5 @@ func (m Model) View() string {
 }
 
 func (m Model) Init() tea.Cmd {
-	return InitCmds(m.Transport)
+	return InitCmds(m.Transport, m.TerminalMgr)
 }
