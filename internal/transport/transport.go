@@ -44,11 +44,13 @@ func NormalizeSessionID(sessionKey string) string {
 	if key == "" {
 		return "main"
 	}
-	if strings.HasPrefix(key, "agent:") {
+	if strings.HasPrefix(strings.ToLower(key), "agent:") {
 		parts := strings.Split(key, ":")
-		if len(parts) >= 4 {
-			id := strings.Join(parts[3:], ":")
-			if strings.TrimSpace(id) != "" {
+		// openclaw agent --session-id expects the raw session id (no colons),
+		// while our UI tracks canonical keys like agent:main:main.
+		// For the common direct key shape, map agent:<agentId>:<sessionId> -> <sessionId>.
+		if len(parts) == 3 {
+			if id := strings.TrimSpace(parts[2]); id != "" {
 				return id
 			}
 		}
