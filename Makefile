@@ -1,10 +1,13 @@
-.PHONY: run build tidy
+.PHONY: run build test tidy
 
 run:
-	go run .
+	go run ./cmd/openclaw-tui
 
 build:
-	go build -o openclaw-tui .
+	go build -o openclaw-tui ./cmd/openclaw-tui
+
+test:
+	go test ./...
 
 tidy:
 	go mod tidy

@@ -11,14 +11,18 @@ Status-first terminal UI for OpenClaw, built with Bubble Tea.
 ## Run
 
 ```bash
-go run .
+go run ./cmd/openclaw-tui
+# or
+make run
 ```
 
 ## Build
 
 ```bash
-go build -o openclaw-tui .
+go build -o openclaw-tui ./cmd/openclaw-tui
 ./openclaw-tui
+# or
+make build
 ```
 
 ## Keybindings (current)
