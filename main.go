@@ -555,12 +555,14 @@ func (m model) View() string {
 	tasksPane := paneBox("Tasks", m.focus == paneTasks, rightW, topH, renderTasks(m.projectItems, m.tasksOffset, topH-2))
 	top := lipgloss.JoinHorizontal(lipgloss.Top, leftTop, tasksPane)
 
-	chatBody := renderChat(m.chatLines, m.chatOffset, m.chatInput, m.chatSending, m.chatStartedAt, m.spinnerIndex, m.mode, m.conn, m.sessionKey, m.lastRefresh, m.errors, bottomH-2)
-	chatPane := paneBox("Chat", m.focus == paneChat, m.width, bottomH, chatBody)
+	chatH := max(6, bottomH-3)
+	chatBody := renderChat(m.chatLines, m.chatOffset, m.chatInput, m.chatSending, m.mode, chatH-2)
+	chatPane := paneBox("Chat", m.focus == paneChat, m.width, chatH, chatBody)
+	statusStrip := renderChatStatusStrip(m.width, m.chatSending, m.chatStartedAt, m.spinnerIndex, m.mode, m.conn, m.sessionKey, m.lastRefresh, m.errors)
 
 	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, r refresh, q quit | EDIT: i (in Chat), Enter send, Esc back")
 
-	parts := []string{header, top, chatPane}
+	parts := []string{header, top, chatPane, statusStrip}
 	if len(m.errors) > 0 {
 		parts = append(parts, errorStyle.Render("Errors: "+strings.Join(m.errors, " | ")))
 	}
@@ -642,11 +644,36 @@ func renderTasks(items []taskItem, offset, height int) string {
 	return strings.Join(out, "\n")
 }
 
-func renderChat(lines []string, offset int, input string, sending bool, startedAt time.Time, spinnerIndex int, md mode, conn connState, sessionKey string, lastRefresh time.Time, errs []string, height int) string {
-	if height < 3 {
+func renderChat(lines []string, offset int, input string, sending bool, md mode, height int) string {
+	if height < 2 {
 		return "> " + input
 	}
+	available := height - 1
+	if available < 1 {
+		available = 1
+	}
+	if len(lines) == 0 {
+		lines = []string{"(no messages yet)"}
+	}
+	if offset > len(lines)-1 {
+		offset = max(0, len(lines)-1)
+	}
+	end := min(len(lines), offset+available)
+	visible := lines[offset:end]
+	for i := range visible {
+		visible[i] = compactLine(visible[i], 140)
+	}
+	prefix := "> "
+	if md == modeEdit {
+		prefix = "I> "
+	}
+	if sending {
+		prefix = "[sending] "
+	}
+	return strings.Join(append(visible, prefix+input), "\n")
+}
 
+func renderChatStatusStrip(width int, sending bool, startedAt time.Time, spinnerIndex int, md mode, conn connState, sessionKey string, lastRefresh time.Time, errs []string) string {
 	modeLabel := "MOVE"
 	if md == modeEdit {
 		modeLabel = "EDIT"
@@ -674,34 +701,17 @@ func renderChat(lines []string, offset int, input string, sending bool, startedA
 	if len(errs) > 0 {
 		errLabel = compactLine(firstLine(errs[len(errs)-1]), 34)
 	}
-	statusLine := fmt.Sprintf("STAT | %s | %s | mode:%s | sess:%s | ref:%s | err:%s", runLabel, connLabel, modeLabel, compactLine(sessionKey, 20), lastRefresh.Format("15:04:05"), errLabel)
+	line := fmt.Sprintf("STAT | %s | %s | mode:%s | sess:%s | ref:%s | err:%s", runLabel, connLabel, modeLabel, compactLine(sessionKey, 20), lastRefresh.Format("15:04:05"), errLabel)
 
-	available := height - 2 // status + input
-	if available < 1 {
-		available = 1
-	}
-	if len(lines) == 0 {
-		lines = []string{"(no messages yet)"}
-	}
-	if offset > len(lines)-1 {
-		offset = max(0, len(lines)-1)
-	}
-	end := min(len(lines), offset+available)
-	visible := lines[offset:end]
-	for i := range visible {
-		visible[i] = compactLine(visible[i], 140)
-	}
-	prefix := "> "
-	if md == modeEdit {
-		prefix = "I> "
-	}
-	if sending {
-		prefix = "[sending] "
-	}
-	rows := []string{compactLine(statusLine, 140)}
-	rows = append(rows, visible...)
-	rows = append(rows, prefix+input)
-	return strings.Join(rows, "\n")
+	strip := lipgloss.NewStyle().
+		BorderTop(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("45")).
+		Foreground(lipgloss.Color("250")).
+		Padding(0, 1).
+		Width(max(8, width-4))
+
+	return strip.Render(compactLine(line, max(20, width-8)))
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
