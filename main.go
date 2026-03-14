@@ -31,8 +31,8 @@ const (
 type mode int
 
 const (
-	modeNormal mode = iota
-	modeInsert
+	modeMove mode = iota
+	modeEdit
 )
 
 type taskItem struct {
@@ -88,11 +88,12 @@ func initialModel() model {
 		connectionItems: []string{"Loading channels..."},
 		chatLines: []string{
 			"Amerish: Ready.",
-			"Normal mode: Ctrl+h/j/k/l focus panes, j/k scroll, r refresh.",
-			"Chat mode: focus chat + i, type, Enter to send, Esc back to normal.",
+			"MOVE mode: h/j/k/l changes pane focus.",
+			"EDIT mode: focus Chat + i, type, Enter sends, Esc returns to MOVE.",
+			"Scroll: J/K line, Ctrl+d/Ctrl+u page.",
 		},
 		focus: paneChat,
-		mode:  modeNormal,
+		mode:  modeMove,
 	}
 }
 
@@ -216,10 +217,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.mode == modeInsert {
+		if m.mode == modeEdit {
 			switch msg.String() {
 			case "esc":
-				m.mode = modeNormal
+				m.mode = modeMove
 				return m, nil
 			case "enter":
 				if m.chatSending {
@@ -252,26 +253,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, refreshCmd()
 		case "i":
 			if m.focus == paneChat {
-				m.mode = modeInsert
+				m.mode = modeEdit
 			}
 			return m, nil
-		case "ctrl+h":
+		case "h":
 			m.focus = focusLeft(m.focus)
 			return m, nil
-		case "ctrl+l":
+		case "l":
 			m.focus = focusRight(m.focus)
 			return m, nil
-		case "ctrl+j":
+		case "j":
 			m.focus = focusDown(m.focus)
 			return m, nil
-		case "ctrl+k":
+		case "k":
 			m.focus = focusUp(m.focus)
 			return m, nil
-		case "j":
+		case "J":
 			m.scrollFocused(1)
 			return m, nil
-		case "k":
+		case "K":
 			m.scrollFocused(-1)
+			return m, nil
+		case "ctrl+d":
+			m.scrollFocused(5)
+			return m, nil
+		case "ctrl+u":
+			m.scrollFocused(-5)
 			return m, nil
 		}
 		return m, nil
@@ -344,9 +351,9 @@ func (m model) View() string {
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
-	modeLabel := "NORMAL"
-	if m.mode == modeInsert {
-		modeLabel = "INSERT"
+	modeLabel := "MOVE"
+	if m.mode == modeEdit {
+		modeLabel = "EDIT"
 	}
 	header := headerStyle.Render(fmt.Sprintf("OpenClaw Ops TUI | %s | status=%s | refreshed=%s", modeLabel, m.status, m.lastRefresh.Format("15:04:05")))
 
@@ -368,7 +375,7 @@ func (m model) View() string {
 	chatBody := renderChat(m.chatLines, m.chatOffset, m.chatInput, m.chatSending, m.mode, bottomH-2)
 	chatPane := paneBox("Chat", m.focus == paneChat, m.width, bottomH, chatBody)
 
-	footer := muted.Render("Vim keys: Ctrl+h/j/k/l focus • j/k scroll • i insert(chat) • Esc normal • Enter send • r refresh • q quit")
+	footer := muted.Render("Modes: MOVE(hjkl focus, J/K scroll, Ctrl+d/u page) • EDIT(i in Chat, Enter send, Esc back) • r refresh • q quit")
 
 	parts := []string{header, top, chatPane}
 	if len(m.errors) > 0 {
@@ -459,7 +466,7 @@ func renderChat(lines []string, offset int, input string, sending bool, md mode,
 		visible[i] = compactLine(visible[i], 140)
 	}
 	prefix := "> "
-	if md == modeInsert {
+	if md == modeEdit {
 		prefix = "I> "
 	}
 	if sending {
