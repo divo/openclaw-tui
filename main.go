@@ -19,6 +19,8 @@ const (
 	tasksPath       = "/home/divo/code/obsidian/Amerish/TASKS.md"
 )
 
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 type pane int
 
 const (
@@ -87,6 +89,10 @@ type retryConnectMsg struct {
 	retryCount int
 }
 
+type uiTickMsg struct {
+	at time.Time
+}
+
 type model struct {
 	width       int
 	height      int
@@ -102,10 +108,12 @@ type model struct {
 	connectionItems []string
 	errors          []string
 
-	chatLines   []string
-	chatInput   string
-	chatSending bool
-	pendingMsg  string // queued while connecting
+	chatLines      []string
+	chatInput      string
+	chatSending    bool
+	chatStartedAt  time.Time
+	spinnerIndex   int
+	pendingMsg     string // queued while connecting
 
 	focus pane
 	mode  mode
@@ -136,7 +144,13 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(discoverSessionCmd(), refreshCmd(), tickCmd())
+	return tea.Batch(discoverSessionCmd(), refreshCmd(), tickCmd(), uiTickCmd())
+}
+
+func uiTickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg {
+		return uiTickMsg{at: t}
+	})
 }
 
 // ── Session Discovery ────────────────────────────────────────────────────────
@@ -290,6 +304,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pending := m.pendingMsg
 			m.pendingMsg = ""
 			m.chatSending = true
+			if m.chatStartedAt.IsZero() {
+				m.chatStartedAt = time.Now()
+			}
 			return m, sendChatCmd(m.sessionKey, pending, 0)
 		}
 		return m, nil
@@ -318,9 +335,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tickCmd()
 
+	// ── UI tick (spinner / elapsed time refresh) ────────────────────────────
+	case uiTickMsg:
+		m.spinnerIndex = (m.spinnerIndex + 1) % len(spinnerFrames)
+		return m, uiTickCmd()
+
 	// ── Chat reply ───────────────────────────────────────────────────────────
 	case chatReplyMsg:
 		m.chatSending = false
+		m.chatStartedAt = time.Time{}
 		if msg.err != nil {
 			if msg.retryCount < 3 {
 				// Treat as a connection problem — re-discover and retry.
@@ -328,6 +351,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatLines = append(m.chatLines, fmt.Sprintf("⚠ send failed (retry %d/3) — reconnecting...", msg.retryCount+1))
 				m.pendingMsg = msg.prompt
 				m.chatSending = true // keep UI in "sending" state
+				m.chatStartedAt = time.Now()
 				return m, discoverSessionCmd()
 			}
 			m.chatLines = append(m.chatLines, "Amerish [error]: "+msg.err.Error())
@@ -369,6 +393,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatLines = append(m.chatLines, "You: "+prompt)
 				m.chatInput = ""
 				m.chatSending = true
+				m.chatStartedAt = time.Now()
 
 				if m.conn != connConnected || m.sessionKey == "" {
 					// Not connected yet — queue the message and kick off discovery.
@@ -530,7 +555,7 @@ func (m model) View() string {
 	tasksPane := paneBox("Tasks", m.focus == paneTasks, rightW, topH, renderTasks(m.projectItems, m.tasksOffset, topH-2))
 	top := lipgloss.JoinHorizontal(lipgloss.Top, leftTop, tasksPane)
 
-	chatBody := renderChat(m.chatLines, m.chatOffset, m.chatInput, m.chatSending, m.mode, m.conn, m.sessionKey, m.lastRefresh, m.errors, bottomH-2)
+	chatBody := renderChat(m.chatLines, m.chatOffset, m.chatInput, m.chatSending, m.chatStartedAt, m.spinnerIndex, m.mode, m.conn, m.sessionKey, m.lastRefresh, m.errors, bottomH-2)
 	chatPane := paneBox("Chat", m.focus == paneChat, m.width, bottomH, chatBody)
 
 	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, r refresh, q quit | EDIT: i (in Chat), Enter send, Esc back")
@@ -617,7 +642,7 @@ func renderTasks(items []taskItem, offset, height int) string {
 	return strings.Join(out, "\n")
 }
 
-func renderChat(lines []string, offset int, input string, sending bool, md mode, conn connState, sessionKey string, lastRefresh time.Time, errs []string, height int) string {
+func renderChat(lines []string, offset int, input string, sending bool, startedAt time.Time, spinnerIndex int, md mode, conn connState, sessionKey string, lastRefresh time.Time, errs []string, height int) string {
 	if height < 3 {
 		return "> " + input
 	}
@@ -626,9 +651,17 @@ func renderChat(lines []string, offset int, input string, sending bool, md mode,
 	if md == modeEdit {
 		modeLabel = "EDIT"
 	}
-	sendLabel := "idle"
+	runLabel := "idle"
 	if sending {
-		sendLabel = "sending"
+		elapsed := 0
+		if !startedAt.IsZero() {
+			elapsed = int(time.Since(startedAt).Seconds())
+			if elapsed < 0 {
+				elapsed = 0
+			}
+		}
+		spin := spinnerFrames[spinnerIndex%len(spinnerFrames)]
+		runLabel = fmt.Sprintf("%s running • %ds", spin, elapsed)
 	}
 	connLabel := strings.TrimSpace(conn.String())
 	if connLabel == "" {
@@ -641,7 +674,7 @@ func renderChat(lines []string, offset int, input string, sending bool, md mode,
 	if len(errs) > 0 {
 		errLabel = compactLine(firstLine(errs[len(errs)-1]), 34)
 	}
-	statusLine := fmt.Sprintf("STAT | mode:%s | send:%s | conn:%s | sess:%s | ref:%s | err:%s", modeLabel, sendLabel, connLabel, compactLine(sessionKey, 20), lastRefresh.Format("15:04:05"), errLabel)
+	statusLine := fmt.Sprintf("STAT | %s | %s | mode:%s | sess:%s | ref:%s | err:%s", runLabel, connLabel, modeLabel, compactLine(sessionKey, 20), lastRefresh.Format("15:04:05"), errLabel)
 
 	available := height - 2 // status + input
 	if available < 1 {
