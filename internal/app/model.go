@@ -107,7 +107,7 @@ func (m Model) View() string {
 	chatBody := chat.View(m.ChatPane.Lines, m.ChatPane.Offset, m.ChatPane.Input, m.ChatPane.Sending, m.Mode, dims.ChatH-2)
 	chatPane := ui.PaneBox("Chat", m.Focus == ui.PaneChat, m.Width, dims.ChatH, chatBody)
 
-	runStatusLine := chat.RunStatusLine(m.ChatPane.Sending, m.ChatPane.StartedAt, m.ChatPane.SpinnerIdx, m.Mode, m.Conn.String(), m.SessionKey, m.LastRefresh, m.Errors)
+	runStatusLine := chat.RunStatusLine(m.ChatPane, m.Mode, m.Conn.String(), m.SessionKey, m.LastRefresh, m.Errors)
 	runStatusPane := ui.PaneBox("Run Status", false, m.Width, dims.RunH, runStatusLine)
 
 	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, r refresh, q quit | EDIT: i (in Chat), Enter send, Esc back")

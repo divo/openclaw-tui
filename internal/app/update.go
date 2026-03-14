@@ -44,13 +44,14 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 		m.SessionKey = x.SessionKey
 		m.Conn = ConnConnected
 		if m.ChatPane.PendingMsg != "" {
-			pending := m.ChatPane.PendingMsg
-			m.ChatPane.PendingMsg = ""
-			m.ChatPane.Sending = true
-			if m.ChatPane.StartedAt.IsZero() {
-				m.ChatPane.StartedAt = time.Now()
-			}
-			return m, chat.SendChatCmd(m.Transport, m.SessionKey, pending, 0)
+			m.ChatPane = chat.BeginPendingSend(m.ChatPane)
+			return m, chat.SendChatCmd(
+				m.Transport,
+				m.SessionKey,
+				m.ChatPane.ActivePrompt,
+				m.ChatPane.ActiveMsgID,
+				m.ChatPane.ActiveAttempt,
+			)
 		}
 		return m, nil
 
@@ -99,11 +100,18 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			}
 			m.ChatPane = chat.StartSend(m.ChatPane, prompt)
 			if m.Conn != ConnConnected || m.SessionKey == "" {
-				m.ChatPane.PendingMsg = prompt
-				m.ChatPane.Lines = append(m.ChatPane.Lines, "⏳ not connected — queued, reconnecting...")
+				m.ChatPane = chat.QueueForReconnect(m.ChatPane, "waiting for connection")
+				m.ChatPane.Lines = append(m.ChatPane.Lines, "⏳ reconnecting session...")
 				return m, DiscoverSessionCmd(m.Transport)
 			}
-			return m, chat.SendChatCmd(m.Transport, m.SessionKey, prompt, 0)
+			m.ChatPane = chat.BeginSend(m.ChatPane)
+			return m, chat.SendChatCmd(
+				m.Transport,
+				m.SessionKey,
+				m.ChatPane.ActivePrompt,
+				m.ChatPane.ActiveMsgID,
+				m.ChatPane.ActiveAttempt,
+			)
 		case "backspace", "ctrl+h":
 			m.ChatPane.Input = trimLastRune(m.ChatPane.Input)
 			return m, nil

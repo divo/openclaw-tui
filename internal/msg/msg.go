@@ -25,8 +25,10 @@ type SessionDiscoverMsg struct {
 type ChatReplyMsg struct {
 	Reply      string
 	Err        error
-	RetryCount int
 	Prompt     string
+	MessageID  int
+	Attempt    int
+	MaxAttempt int
 }
 
 type UITickMsg struct {
