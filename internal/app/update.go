@@ -10,6 +10,7 @@ import (
 	"openclaw-tui/internal/features/sessions"
 	"openclaw-tui/internal/features/status"
 	"openclaw-tui/internal/features/tasks"
+	"openclaw-tui/internal/features/terminal"
 	"openclaw-tui/internal/msg"
 	"openclaw-tui/internal/transport"
 	"openclaw-tui/internal/ui"
@@ -30,6 +31,8 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 	if rr.Cmd != nil {
 		return m, rr.Cmd
 	}
+
+	m.TerminalPane = terminal.Reduce(m.TerminalPane, incoming)
 
 	switch x := incoming.(type) {
 	case msg.SessionDiscoverMsg:
@@ -72,6 +75,12 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 		}
 		return m, TickCmd(m.Transport)
 
+	case terminal.EventMsg:
+		return m, terminal.WaitEventCmd(m.TerminalMgr)
+
+	case terminal.StartSessionResultMsg:
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.Width = x.Width
 		m.Height = x.Height
@@ -86,51 +95,97 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 
 func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 	if m.Mode == ui.ModeEdit {
-		switch k.String() {
-		case "esc":
-			m.Mode = ui.ModeMove
-			return m, nil
-		case "enter":
-			if m.ChatPane.Sending {
+		if m.Focus == ui.PaneChat {
+			switch k.String() {
+			case "esc":
+				m.Mode = ui.ModeMove
+				return m, nil
+			case "enter":
+				if m.ChatPane.Sending {
+					return m, nil
+				}
+				prompt := strings.TrimSpace(m.ChatPane.Input)
+				if prompt == "" {
+					return m, nil
+				}
+				m.ChatPane = chat.StartSend(m.ChatPane, prompt)
+				if m.Conn != ConnConnected || m.SessionKey == "" {
+					m.ChatPane = chat.QueueForReconnect(m.ChatPane, "waiting for connection")
+					m.ChatPane.Lines = append(m.ChatPane.Lines, "⏳ reconnecting session...")
+					return m, DiscoverSessionCmd(m.Transport)
+				}
+				m.ChatPane = chat.BeginSend(m.ChatPane)
+				return m, chat.SendChatCmd(
+					m.Transport,
+					m.SessionKey,
+					m.ChatPane.ActivePrompt,
+					m.ChatPane.ActiveMsgID,
+					m.ChatPane.ActiveAttempt,
+				)
+			case "backspace", "ctrl+h":
+				m.ChatPane.Input = trimLastRune(m.ChatPane.Input)
+				return m, nil
+			default:
+				if len(k.Runes) > 0 {
+					m.ChatPane.Input += string(k.Runes)
+				}
 				return m, nil
 			}
-			prompt := strings.TrimSpace(m.ChatPane.Input)
-			if prompt == "" {
+		}
+
+		if m.Focus == ui.PaneTerminal {
+			active := m.TerminalPane.ActiveSession()
+			switch k.String() {
+			case "esc":
+				m.Mode = ui.ModeMove
+				m.TerminalPane.CommandMode = false
+				m.TerminalPane.PendingCommand = ""
+				return m, nil
+			case "ctrl+n":
+				m.TerminalPane.CommandMode = true
+				m.TerminalPane.PendingCommand = ""
+				m.TerminalPane.SetStatus("new session command: shell | claude | ssh <host>", false)
 				return m, nil
 			}
-			m.ChatPane = chat.StartSend(m.ChatPane, prompt)
-			if m.Conn != ConnConnected || m.SessionKey == "" {
-				m.ChatPane = chat.QueueForReconnect(m.ChatPane, "waiting for connection")
-				m.ChatPane.Lines = append(m.ChatPane.Lines, "⏳ reconnecting session...")
-				return m, DiscoverSessionCmd(m.Transport)
+
+			if m.TerminalPane.CommandMode {
+				switch k.String() {
+				case "enter":
+					spec, err := terminal.ParseCreateCommand(m.TerminalPane.PendingCommand)
+					m.TerminalPane.CommandMode = false
+					m.TerminalPane.PendingCommand = ""
+					if err != nil {
+						m.TerminalPane.SetStatus(err.Error(), true)
+						return m, nil
+					}
+					return m, terminal.StartSessionCmd(m.TerminalMgr, spec)
+				case "backspace", "ctrl+h":
+					m.TerminalPane.PendingCommand = trimLastRune(m.TerminalPane.PendingCommand)
+					return m, nil
+				default:
+					if len(k.Runes) > 0 {
+						m.TerminalPane.PendingCommand += string(k.Runes)
+					}
+					return m, nil
+				}
 			}
-			m.ChatPane = chat.BeginSend(m.ChatPane)
-			return m, chat.SendChatCmd(
-				m.Transport,
-				m.SessionKey,
-				m.ChatPane.ActivePrompt,
-				m.ChatPane.ActiveMsgID,
-				m.ChatPane.ActiveAttempt,
-			)
-		case "backspace", "ctrl+h":
-			m.ChatPane.Input = trimLastRune(m.ChatPane.Input)
-			return m, nil
-		default:
-			if len(k.Runes) > 0 {
-				m.ChatPane.Input += string(k.Runes)
+
+			if active == nil {
+				m.TerminalPane.SetStatus("no active session; press Ctrl+n and run shell/claude/ssh <host>", true)
+				return m, nil
 			}
-			return m, nil
+			return m, forwardTerminalKey(active.ID, k, m.TerminalMgr)
 		}
 	}
 
 	switch k.String() {
 	case "q", "ctrl+c":
-		return m, tea.Quit
+		return m, tea.Sequence(terminal.ShutdownCmd(m.TerminalMgr), tea.Quit)
 	case "r":
 		m.Status = "Refreshing..."
 		return m, tea.Batch(RefreshCmd(m.Transport), DiscoverSessionCmd(m.Transport))
 	case "i":
-		if m.Focus == ui.PaneChat {
+		if m.Focus == ui.PaneChat || m.Focus == ui.PaneTerminal {
 			m.Mode = ui.ModeEdit
 		}
 		return m, nil
@@ -145,6 +200,24 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	case "k":
 		m.Focus = ui.FocusUp(m.Focus)
+		return m, nil
+	case "n":
+		if m.Focus == ui.PaneTerminal {
+			m.TerminalPane.NextSession()
+		}
+		return m, nil
+	case "p":
+		if m.Focus == ui.PaneTerminal {
+			m.TerminalPane.PrevSession()
+		}
+		return m, nil
+	case "x":
+		if m.Focus == ui.PaneTerminal {
+			active := m.TerminalPane.ActiveSession()
+			if active != nil {
+				return m, terminal.KillSessionCmd(m.TerminalMgr, active.ID)
+			}
+		}
 		return m, nil
 	case "J":
 		scrollFocused(&m, 1)
@@ -172,7 +245,49 @@ func scrollFocused(m *Model, delta int) {
 		m.TasksPane.Offset = max(0, m.TasksPane.Offset+delta)
 	case ui.PaneChat:
 		m.ChatPane.Offset = max(0, m.ChatPane.Offset+delta)
+	case ui.PaneTerminal:
+		active := m.TerminalPane.ActiveSession()
+		if active != nil {
+			active.Scrollback = max(0, active.Scrollback+delta)
+		}
 	}
+}
+
+func forwardTerminalKey(sessionID string, k tea.KeyMsg, mgr *terminal.Manager) tea.Cmd {
+	switch k.String() {
+	case "enter":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\r"))
+	case "tab":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\t"))
+	case "backspace", "ctrl+h":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte{0x7f})
+	case "up":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[A"))
+	case "down":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[B"))
+	case "left":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[D"))
+	case "right":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[C"))
+	}
+	if b, ok := ctrlKeyByte(k.String()); ok {
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte{b})
+	}
+	if len(k.Runes) > 0 {
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte(string(k.Runes)))
+	}
+	return nil
+}
+
+func ctrlKeyByte(s string) (byte, bool) {
+	if !strings.HasPrefix(s, "ctrl+") || len(s) != len("ctrl+")+1 {
+		return 0, false
+	}
+	r := s[len(s)-1]
+	if r >= 'a' && r <= 'z' {
+		return r - 'a' + 1, true
+	}
+	return 0, false
 }
 
 func trimLastRune(s string) string {
