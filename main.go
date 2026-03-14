@@ -555,14 +555,17 @@ func (m model) View() string {
 	tasksPane := paneBox("Tasks", m.focus == paneTasks, rightW, topH, renderTasks(m.projectItems, m.tasksOffset, topH-2))
 	top := lipgloss.JoinHorizontal(lipgloss.Top, leftTop, tasksPane)
 
-	chatH := max(6, bottomH-3)
+	statusPaneH := 4
+	chatH := max(6, bottomH-statusPaneH)
 	chatBody := renderChat(m.chatLines, m.chatOffset, m.chatInput, m.chatSending, m.mode, chatH-2)
 	chatPane := paneBox("Chat", m.focus == paneChat, m.width, chatH, chatBody)
-	statusStrip := renderChatStatusStrip(m.width, m.chatSending, m.chatStartedAt, m.spinnerIndex, m.mode, m.conn, m.sessionKey, m.lastRefresh, m.errors)
+
+	runStatusLine := renderRunStatusLine(m.chatSending, m.chatStartedAt, m.spinnerIndex, m.mode, m.conn, m.sessionKey, m.lastRefresh, m.errors)
+	runStatusPane := paneBox("Run Status", false, m.width, statusPaneH, runStatusLine)
 
 	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, r refresh, q quit | EDIT: i (in Chat), Enter send, Esc back")
 
-	parts := []string{header, top, chatPane, statusStrip}
+	parts := []string{header, top, chatPane, runStatusPane}
 	if len(m.errors) > 0 {
 		parts = append(parts, errorStyle.Render("Errors: "+strings.Join(m.errors, " | ")))
 	}
@@ -673,7 +676,7 @@ func renderChat(lines []string, offset int, input string, sending bool, md mode,
 	return strings.Join(append(visible, prefix+input), "\n")
 }
 
-func renderChatStatusStrip(width int, sending bool, startedAt time.Time, spinnerIndex int, md mode, conn connState, sessionKey string, lastRefresh time.Time, errs []string) string {
+func renderRunStatusLine(sending bool, startedAt time.Time, spinnerIndex int, md mode, conn connState, sessionKey string, lastRefresh time.Time, errs []string) string {
 	modeLabel := "MOVE"
 	if md == modeEdit {
 		modeLabel = "EDIT"
@@ -701,17 +704,8 @@ func renderChatStatusStrip(width int, sending bool, startedAt time.Time, spinner
 	if len(errs) > 0 {
 		errLabel = compactLine(firstLine(errs[len(errs)-1]), 34)
 	}
-	line := fmt.Sprintf("STAT | %s | %s | mode:%s | sess:%s | ref:%s | err:%s", runLabel, connLabel, modeLabel, compactLine(sessionKey, 20), lastRefresh.Format("15:04:05"), errLabel)
-
-	strip := lipgloss.NewStyle().
-		BorderTop(true).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("45")).
-		Foreground(lipgloss.Color("250")).
-		Padding(0, 1).
-		Width(max(8, width-4))
-
-	return strip.Render(compactLine(line, max(20, width-8)))
+	line := fmt.Sprintf("%s | %s | mode:%s | sess:%s | ref:%s | err:%s", runLabel, connLabel, modeLabel, compactLine(sessionKey, 20), lastRefresh.Format("15:04:05"), errLabel)
+	return compactLine(line, 160)
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
