@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 )
 
 type CLITransport struct{}
@@ -78,8 +77,4 @@ func firstLine(s string) string {
 		return ""
 	}
 	return parts[0]
-}
-
-func WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, d)
 }
