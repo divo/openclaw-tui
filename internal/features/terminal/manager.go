@@ -5,10 +5,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
 )
 
@@ -189,6 +193,38 @@ func (m *Manager) Attach(sessionID string) (<-chan struct{}, error) {
 		defer close(done)
 		defer func() { _ = f.Close() }()
 
+		// Raw mode removes cooked-input lag while attached.
+		var oldState *term.State
+		if term.IsTerminal(os.Stdin.Fd()) {
+			if st, e := term.MakeRaw(os.Stdin.Fd()); e == nil {
+				oldState = st
+			}
+		}
+		defer func() {
+			if oldState != nil {
+				_ = term.Restore(os.Stdin.Fd(), oldState)
+			}
+		}()
+
+		// Initial size sync + SIGWINCH resize forwarding to avoid clipped views.
+		_ = pty.InheritSize(os.Stdin, f)
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGWINCH)
+		defer signal.Stop(sigCh)
+		resizeDone := make(chan struct{})
+		stopResize := make(chan struct{})
+		go func() {
+			defer close(resizeDone)
+			for {
+				select {
+				case <-sigCh:
+					_ = pty.InheritSize(os.Stdin, f)
+				case <-stopResize:
+					return
+				}
+			}
+		}()
+
 		// tmux -> stdout
 		copyDone := make(chan struct{}, 1)
 		go func() {
@@ -239,6 +275,9 @@ func (m *Manager) Attach(sessionID string) (<-chan struct{}, error) {
 		case <-copyDone:
 		case <-time.After(300 * time.Millisecond):
 		}
+
+		close(stopResize)
+		<-resizeDone
 	}(rs.tmuxSession, cmd, ptmx)
 
 	return done, nil
@@ -260,6 +299,29 @@ func (m *Manager) CaptureFull(sessionID string) ([]string, error) {
 		return nil, nil
 	}
 	return strings.Split(out, "\n"), nil
+}
+
+// ResizeAll applies a detached pane size hint to all tmux sessions.
+// This keeps capture-pane output from being clipped to stale/default sizes.
+func (m *Manager) ResizeAll(width, height int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+	m.mu.Lock()
+	names := make([]string, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		names = append(names, s.tmuxSession)
+	}
+	m.mu.Unlock()
+
+	w := strconv.Itoa(width)
+	h := strconv.Itoa(height)
+	for _, name := range names {
+		_, err := runTmux("resize-window", "-t", name, "-x", w, "-y", h)
+		if err != nil {
+			m.emit(ManagerErrorEvent{Err: fmt.Sprintf("resize %s: %v", name, err)})
+		}
+	}
 }
 
 func (m *Manager) Shutdown() {

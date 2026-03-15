@@ -91,6 +91,13 @@ func CaptureFullCmd(mgr *Manager, sessionID string) tea.Cmd {
 	}
 }
 
+func ResizeAllCmd(mgr *Manager, width, height int) tea.Cmd {
+	return func() tea.Msg {
+		mgr.ResizeAll(width, height)
+		return nil
+	}
+}
+
 func ShutdownCmd(mgr *Manager) tea.Cmd {
 	return func() tea.Msg {
 		mgr.Shutdown()

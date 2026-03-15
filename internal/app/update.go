@@ -147,7 +147,10 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = x.Width
 		m.Height = x.Height
-		return m, nil
+		dims := ui.ComputeDimensions(m.Width, m.Height)
+		termW := max(20, m.Width-2)
+		termH := max(5, dims.TerminalH-2)
+		return m, terminal.ResizeAllCmd(m.TerminalMgr, termW, termH)
 
 	case tea.KeyMsg:
 		return reduceKey(m, x)
