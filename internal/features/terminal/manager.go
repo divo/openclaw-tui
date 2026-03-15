@@ -79,11 +79,13 @@ type runtimeSession struct {
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	sessions map[string]*runtimeSession
-	nextID   int
-	events   chan Event
-	stopCh   chan struct{}
+	mu          sync.Mutex
+	sessions    map[string]*runtimeSession
+	nextID      int
+	events      chan Event
+	stopCh      chan struct{}
+	desiredCols int
+	desiredRows int
 }
 
 func NewManager() *Manager {
@@ -128,7 +130,12 @@ func (m *Manager) Start(spec SessionSpec) error {
 	rs := &runtimeSession{id: id, spec: spec, tmuxSession: t}
 	m.mu.Lock()
 	m.sessions[id] = rs
+	cols, rows := m.desiredCols, m.desiredRows
 	m.mu.Unlock()
+
+	if cols > 0 && rows > 0 {
+		_ = t.SetDetachedSize(cols, rows)
+	}
 
 	m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusRunning}})
 
@@ -221,7 +228,16 @@ func (m *Manager) FinishAttach(sessionID string) error {
 		rs.attaching = false
 		m.mu.Unlock()
 	}()
-	return rs.tmuxSession.Restore()
+	if err := rs.tmuxSession.Restore(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	cols, rows := m.desiredCols, m.desiredRows
+	m.mu.Unlock()
+	if cols > 0 && rows > 0 {
+		_ = rs.tmuxSession.SetDetachedSize(cols, rows)
+	}
+	return nil
 }
 
 func (m *Manager) CaptureFull(sessionID string) ([]string, error) {
@@ -241,6 +257,7 @@ func (m *Manager) ResizeAll(width, height int) {
 		return
 	}
 	m.mu.Lock()
+	m.desiredCols, m.desiredRows = width, height
 	sessions := make([]*runtimeSession, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		sessions = append(sessions, s)

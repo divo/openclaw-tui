@@ -147,10 +147,10 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = x.Width
 		m.Height = x.Height
-		// Keep tmux sessions sized to the full terminal, not the embedded pane.
-		// Sizing to pane height causes clipped full-screen attach sessions.
+		dims := ui.ComputeDimensions(m.Width, m.Height)
+		// Detached in-pane terminal should match the pane dimensions.
 		termW := max(20, m.Width-2)
-		termH := max(10, m.Height-2)
+		termH := max(6, dims.TerminalH-2)
 		return m, terminal.ResizeAllCmd(m.TerminalMgr, termW, termH)
 
 	case tea.KeyMsg:
