@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -25,6 +26,16 @@ func Reduce(state State, incoming tea.Msg) (State, ReduceResult) {
 		state.StartedAt = time.Time{}
 
 		if m.Err != nil {
+			// Timeout: the message may already have been delivered to the agent.
+			// Retrying would send it a second time — don't.
+			if isTimeoutError(m.Err) {
+				state.Lines = append(state.Lines,
+					fmt.Sprintf("↳ [%03d] timed out after %s — check the main chat for a reply", m.MessageID, sendTimeout),
+				)
+				trimLines(&state)
+				return ClearActive(state), ReduceResult{}
+			}
+
 			if isSessionLockError(m.Err) {
 				if m.Attempt < MaxLockAttempts {
 					nextAttempt := m.Attempt + 1
@@ -93,6 +104,15 @@ func compactLine(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return err == context.DeadlineExceeded || err == context.Canceled ||
+		strings.Contains(err.Error(), "context deadline exceeded") ||
+		strings.Contains(err.Error(), "context canceled")
 }
 
 func isSessionLockError(err error) bool {

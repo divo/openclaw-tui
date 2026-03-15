@@ -10,9 +10,13 @@ import (
 	"openclaw-tui/internal/transport"
 )
 
+// sendTimeout is generous: Claude replies can easily take 60-120 s on complex
+// prompts. A tight timeout causes spurious retries that double-send messages.
+const sendTimeout = 3 * time.Minute
+
 func SendChatCmd(t transport.Transport, sessionKey, prompt string, messageID, attempt int) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 		defer cancel()
 		reply, err := t.SendAgent(ctx, sessionKey, prompt)
 		if err != nil {

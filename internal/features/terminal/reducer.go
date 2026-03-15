@@ -39,6 +39,7 @@ func reduceEvent(state State, evt Event) State {
 	case ExitEvent:
 		for i := range s.Sessions {
 			if s.Sessions[i].ID == e.SessionID {
+				s.Sessions[i].Buffer.Flush() // commit any partial line
 				s.Sessions[i].Status = SessionStatusExited
 				s.Sessions[i].ExitCode = e.ExitCode
 				s.Sessions[i].LastError = e.Err
