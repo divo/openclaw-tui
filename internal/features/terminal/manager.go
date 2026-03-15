@@ -2,11 +2,14 @@ package terminal
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 type SessionSpec struct {
@@ -166,17 +169,97 @@ func (m *Manager) Kill(sessionID string) error {
 	return nil
 }
 
-func (m *Manager) AttachCommand(sessionID string) (*exec.Cmd, error) {
+// Attach enters full-screen attach mode for a tmux session and returns a done
+// channel that closes when detached/finished. Detach chord: Ctrl+Q.
+func (m *Manager) Attach(sessionID string) (<-chan struct{}, error) {
 	rs, err := m.getSession(sessionID)
 	if err != nil {
 		return nil, err
 	}
+
 	cmd := exec.Command("tmux", "attach-session", "-t", rs.tmuxSession)
 	cmd.Env = os.Environ()
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd, nil
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	done := make(chan struct{})
+	go func(tmuxSession string, c *exec.Cmd, f *os.File) {
+		defer close(done)
+		defer func() { _ = f.Close() }()
+
+		// tmux -> stdout
+		copyDone := make(chan struct{}, 1)
+		go func() {
+			_, _ = io.Copy(os.Stdout, f)
+			copyDone <- struct{}{}
+		}()
+
+		// stdin -> tmux with Ctrl+Q detach
+		inDone := make(chan struct{}, 1)
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := os.Stdin.Read(buf)
+				if n > 0 {
+					for i := 0; i < n; i++ {
+						if buf[i] == 0x11 { // Ctrl+Q
+							_, _ = runTmux("detach-client", "-s", tmuxSession)
+							inDone <- struct{}{}
+							return
+						}
+					}
+					_, _ = f.Write(buf[:n])
+				}
+				if err != nil {
+					inDone <- struct{}{}
+					return
+				}
+			}
+		}()
+
+		waitDone := make(chan struct{}, 1)
+		go func() {
+			_ = c.Wait()
+			waitDone <- struct{}{}
+		}()
+
+		select {
+		case <-waitDone:
+		case <-inDone:
+			// give tmux a moment to settle detach path
+			select {
+			case <-waitDone:
+			case <-time.After(300 * time.Millisecond):
+			}
+		}
+
+		select {
+		case <-copyDone:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}(rs.tmuxSession, cmd, ptmx)
+
+	return done, nil
+}
+
+func (m *Manager) CaptureFull(sessionID string) ([]string, error) {
+	rs, err := m.getSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	out, err := runTmux("capture-pane", "-p", "-e", "-J", "-t", rs.tmuxSession, "-S", "-", "-E", "-")
+	if err != nil {
+		return nil, err
+	}
+	out = strings.ReplaceAll(out, "\r\n", "\n")
+	out = strings.ReplaceAll(out, "\r", "\n")
+	out = strings.TrimRight(out, "\n")
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
 }
 
 func (m *Manager) Shutdown() {
@@ -258,7 +341,7 @@ func (m *Manager) pollOnce() {
 
 func (m *Manager) capture(tmuxSession string, historyLines int) ([]string, string, error) {
 	start := fmt.Sprintf("-%d", historyLines)
-	out, err := runTmux("capture-pane", "-p", "-J", "-t", tmuxSession, "-S", start)
+	out, err := runTmux("capture-pane", "-p", "-e", "-J", "-t", tmuxSession, "-S", start)
 	if err != nil {
 		return nil, "", err
 	}

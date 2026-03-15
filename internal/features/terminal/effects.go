@@ -20,6 +20,12 @@ type AttachResultMsg struct {
 	Err       error
 }
 
+type CaptureFullResultMsg struct {
+	SessionID string
+	Lines     []string
+	Err       error
+}
+
 func WaitEventCmd(mgr *Manager) tea.Cmd {
 	return func() tea.Msg {
 		evt, ok := <-mgr.Events()
@@ -62,18 +68,27 @@ func KillSessionCmd(mgr *Manager, sessionID string) tea.Cmd {
 }
 
 func AttachCmd(mgr *Manager, sessionID string) tea.Cmd {
-	if sessionID == "" {
-		return nil
-	}
-	cmd, err := mgr.AttachCommand(sessionID)
-	if err != nil {
-		return func() tea.Msg {
+	return func() tea.Msg {
+		if sessionID == "" {
+			return AttachResultMsg{SessionID: sessionID, Err: nil}
+		}
+		done, err := mgr.Attach(sessionID)
+		if err != nil {
 			return AttachResultMsg{SessionID: sessionID, Err: err}
 		}
+		<-done
+		return AttachResultMsg{SessionID: sessionID, Err: nil}
 	}
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return AttachResultMsg{SessionID: sessionID, Err: err}
-	})
+}
+
+func CaptureFullCmd(mgr *Manager, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		if sessionID == "" {
+			return CaptureFullResultMsg{SessionID: sessionID, Lines: nil, Err: nil}
+		}
+		lines, err := mgr.CaptureFull(sessionID)
+		return CaptureFullResultMsg{SessionID: sessionID, Lines: lines, Err: err}
+	}
 }
 
 func ShutdownCmd(mgr *Manager) tea.Cmd {

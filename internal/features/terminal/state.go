@@ -37,6 +37,7 @@ type State struct {
 	MaxBufferBytes  int
 	PendingCommand  string
 	CommandMode     bool
+	IsScrolling     bool
 	LastStatusLine  string
 	LastStatusIsErr bool
 	LastErrorAt     time.Time
@@ -57,6 +58,13 @@ func (s *State) ActiveSession() *Session {
 		return nil
 	}
 	return &s.Sessions[s.Active]
+}
+
+func (s *State) ActiveSessionID() string {
+	if a := s.ActiveSession(); a != nil {
+		return a.ID
+	}
+	return ""
 }
 
 func (s *State) Upsert(meta SessionMeta) {
@@ -116,6 +124,7 @@ func (s *State) NextSession() {
 		return
 	}
 	s.Active = (s.Active + 1) % len(s.Sessions)
+	s.IsScrolling = false
 }
 
 func (s *State) PrevSession() {
@@ -126,6 +135,7 @@ func (s *State) PrevSession() {
 	if s.Active < 0 {
 		s.Active = len(s.Sessions) - 1
 	}
+	s.IsScrolling = false
 }
 
 func (s *State) SetSnapshot(sessionID string, lines []string) {
@@ -149,6 +159,25 @@ func (s *State) SetStatus(line string, isErr bool) {
 	s.LastStatusIsErr = isErr
 	if isErr {
 		s.LastErrorAt = time.Now()
+	}
+}
+
+func (s *State) EnterScrollMode(lines []string) {
+	a := s.ActiveSession()
+	if a == nil {
+		return
+	}
+	out := make([]string, len(lines))
+	copy(out, lines)
+	a.Snapshot = out
+	s.IsScrolling = true
+	a.Scrollback = 0
+}
+
+func (s *State) ExitScrollMode() {
+	s.IsScrolling = false
+	if a := s.ActiveSession(); a != nil {
+		a.Scrollback = 0
 	}
 }
 

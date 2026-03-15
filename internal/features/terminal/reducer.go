@@ -22,6 +22,13 @@ func Reduce(state State, incoming any) State {
 		} else {
 			s.SetStatus(fmt.Sprintf("detached [%s]", m.SessionID), false)
 		}
+	case CaptureFullResultMsg:
+		if m.Err != nil {
+			s.SetStatus(fmt.Sprintf("scroll capture failed [%s]: %v", m.SessionID, m.Err), true)
+		} else {
+			s.EnterScrollMode(m.Lines)
+			s.SetStatus("scroll mode: J/K move, Esc exits", false)
+		}
 	}
 	return s
 }
@@ -41,7 +48,9 @@ func reduceEvent(state State, evt Event) State {
 			}
 		}
 	case CaptureEvent:
-		s.SetSnapshot(e.SessionID, e.Lines)
+		if !(s.IsScrolling && s.ActiveSessionID() == e.SessionID) {
+			s.SetSnapshot(e.SessionID, e.Lines)
+		}
 	case ExitEvent:
 		for i := range s.Sessions {
 			if s.Sessions[i].ID == e.SessionID {

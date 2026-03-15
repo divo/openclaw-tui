@@ -11,14 +11,12 @@ func View(state State, height int) string {
 			"No terminal sessions.",
 			"",
 			"Create tmux sessions from Terminal pane in EDIT mode:",
-			"  Ctrl+n then one of:",
-			"    shell",
-			"    claude",
-			"    ssh <host>",
+			"  Ctrl+n starts a shell",
+			"  Ctrl+t opens custom command mode (shell|claude|ssh <host>)",
 			"",
 			"When a session exists:",
-			"  MOVE mode + Enter => attach (best for nvim/full-screen apps)",
-			"  Detach from tmux with Ctrl+b then d",
+			"  MOVE mode + Enter (or a) => attach (best for nvim/full-screen apps)",
+			"  Detach from attach mode with Ctrl+Q",
 		}
 		if state.CommandMode {
 			body = append(body, "", "> "+state.PendingCommand)
@@ -57,6 +55,9 @@ func View(state State, height int) string {
 		}
 	}
 
+	if state.IsScrolling {
+		lines = append(lines, "", "-- scroll mode (J/K, Ctrl+d/u, Esc to exit) --")
+	}
 	if state.CommandMode {
 		lines = append(lines, "> "+state.PendingCommand)
 	}

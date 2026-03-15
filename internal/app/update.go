@@ -136,6 +136,14 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 	case terminal.StartSessionResultMsg:
 		return m, nil
 
+	case terminal.AttachResultMsg:
+		// After attach returns, keep focus in MOVE mode.
+		m.Mode = ui.ModeMove
+		return m, nil
+
+	case terminal.CaptureFullResultMsg:
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.Width = x.Width
 		m.Height = x.Height
@@ -218,19 +226,15 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				m.TerminalPane.PendingCommand = ""
 				return m, nil
 			case "ctrl+n":
+				m.TerminalPane.CommandMode = false
+				m.TerminalPane.PendingCommand = ""
+				m.TerminalPane.SetStatus("starting shell tmux session...", false)
+				return m, terminal.StartSessionCmd(m.TerminalMgr, terminal.ShellSpec())
+			case "ctrl+t":
 				m.TerminalPane.CommandMode = true
 				m.TerminalPane.PendingCommand = ""
 				m.TerminalPane.SetStatus("new tmux session: shell | claude | ssh <host>", false)
 				return m, nil
-			case "enter", "ctrl+m":
-				if !m.TerminalPane.CommandMode {
-					if active == nil {
-						m.TerminalPane.SetStatus("no active session to attach", true)
-						return m, nil
-					}
-					m.TerminalPane.SetStatus("attaching... (detach with Ctrl+b then d)", false)
-					return m, terminal.AttachCmd(m.TerminalMgr, active.ID)
-				}
 			}
 
 			if m.TerminalPane.CommandMode {
@@ -256,7 +260,7 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			}
 
 			if active == nil {
-				m.TerminalPane.SetStatus("no active session; press Ctrl+n and run shell/claude/ssh <host>", true)
+				m.TerminalPane.SetStatus("no active session; press Ctrl+n for shell (or Ctrl+t for custom)", true)
 				return m, nil
 			}
 			return m, forwardTerminalKey(active.ID, k, m.TerminalMgr)
@@ -264,11 +268,31 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	switch k.String() {
+	case "esc":
+		if m.Focus == ui.PaneTerminal && m.TerminalPane.IsScrolling {
+			m.TerminalPane.ExitScrollMode()
+			m.TerminalPane.SetStatus("exited scroll mode", false)
+		}
+		return m, nil
 	case "q", "ctrl+c":
 		return m, tea.Sequence(terminal.ShutdownCmd(m.TerminalMgr), tea.Quit)
 	case "r":
 		m.Status = "Refreshing..."
 		return m, tea.Batch(RefreshCmd(m.Transport), DiscoverSessionCmd(m.Transport))
+	case "ctrl+n":
+		if m.Focus == ui.PaneTerminal {
+			m.TerminalPane.SetStatus("starting shell tmux session...", false)
+			return m, terminal.StartSessionCmd(m.TerminalMgr, terminal.ShellSpec())
+		}
+		return m, nil
+	case "ctrl+t":
+		if m.Focus == ui.PaneTerminal {
+			m.Mode = ui.ModeEdit
+			m.TerminalPane.CommandMode = true
+			m.TerminalPane.PendingCommand = ""
+			m.TerminalPane.SetStatus("new tmux session: shell | claude | ssh <host>", false)
+		}
+		return m, nil
 	case "i":
 		if m.Focus == ui.PaneChat || m.Focus == ui.PaneTerminal {
 			m.Mode = ui.ModeEdit
@@ -304,26 +328,50 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-	case "enter", "ctrl+m":
+	case "enter", "ctrl+m", "a":
 		if m.Focus == ui.PaneTerminal {
 			active := m.TerminalPane.ActiveSession()
 			if active != nil {
-				m.TerminalPane.SetStatus("attaching... (detach with Ctrl+b then d)", false)
+				m.TerminalPane.SetStatus("attaching... (detach with Ctrl+Q)", false)
 				return m, terminal.AttachCmd(m.TerminalMgr, active.ID)
 			}
 			m.TerminalPane.SetStatus("no active session to attach", true)
 		}
 		return m, nil
 	case "J":
+		if m.Focus == ui.PaneTerminal && !m.TerminalPane.IsScrolling {
+			active := m.TerminalPane.ActiveSession()
+			if active != nil {
+				return m, terminal.CaptureFullCmd(m.TerminalMgr, active.ID)
+			}
+		}
 		scrollFocused(&m, 1)
 		return m, nil
 	case "K":
+		if m.Focus == ui.PaneTerminal && !m.TerminalPane.IsScrolling {
+			active := m.TerminalPane.ActiveSession()
+			if active != nil {
+				return m, terminal.CaptureFullCmd(m.TerminalMgr, active.ID)
+			}
+		}
 		scrollFocused(&m, -1)
 		return m, nil
 	case "ctrl+d":
+		if m.Focus == ui.PaneTerminal && !m.TerminalPane.IsScrolling {
+			active := m.TerminalPane.ActiveSession()
+			if active != nil {
+				return m, terminal.CaptureFullCmd(m.TerminalMgr, active.ID)
+			}
+		}
 		scrollFocused(&m, 5)
 		return m, nil
 	case "ctrl+u":
+		if m.Focus == ui.PaneTerminal && !m.TerminalPane.IsScrolling {
+			active := m.TerminalPane.ActiveSession()
+			if active != nil {
+				return m, terminal.CaptureFullCmd(m.TerminalMgr, active.ID)
+			}
+		}
 		scrollFocused(&m, -5)
 		return m, nil
 	case "G":
