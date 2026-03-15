@@ -15,7 +15,8 @@ func View(state State, height int) string {
 			"  Ctrl+t opens custom command mode (shell|claude|ssh <host>)",
 			"",
 			"When a session exists:",
-			"  MOVE mode + Enter (or a) => attach (best for nvim/full-screen apps)",
+			"  Embedded pane is view-only (capture snapshot)",
+			"  MOVE/EDIT + Enter (or a) => attach for real interaction",
 			"  Detach from attach mode with Ctrl+Q",
 		}
 		if state.CommandMode {

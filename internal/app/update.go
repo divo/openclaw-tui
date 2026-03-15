@@ -147,9 +147,10 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = x.Width
 		m.Height = x.Height
-		dims := ui.ComputeDimensions(m.Width, m.Height)
+		// Keep tmux sessions sized to the full terminal, not the embedded pane.
+		// Sizing to pane height causes clipped full-screen attach sessions.
 		termW := max(20, m.Width-2)
-		termH := max(5, dims.TerminalH-2)
+		termH := max(10, m.Height-2)
 		return m, terminal.ResizeAllCmd(m.TerminalMgr, termW, termH)
 
 	case tea.KeyMsg:
@@ -238,6 +239,15 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				m.TerminalPane.PendingCommand = ""
 				m.TerminalPane.SetStatus("new tmux session: shell | claude | ssh <host>", false)
 				return m, nil
+			case "enter", "ctrl+m":
+				if !m.TerminalPane.CommandMode {
+					if active == nil {
+						m.TerminalPane.SetStatus("no active session to attach", true)
+						return m, nil
+					}
+					m.TerminalPane.SetStatus("attaching... (detach with Ctrl+Q)", false)
+					return m, terminal.AttachCmd(m.TerminalMgr, active.ID)
+				}
 			}
 
 			if m.TerminalPane.CommandMode {
@@ -266,7 +276,10 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				m.TerminalPane.SetStatus("no active session; press Ctrl+n for shell (or Ctrl+t for custom)", true)
 				return m, nil
 			}
-			return m, forwardTerminalKey(active.ID, k, m.TerminalMgr)
+			// Embedded pane is capture-only for reliability.
+			// Use attach for real interactive terminal use.
+			m.TerminalPane.SetStatus("embedded terminal is view-only; press Enter/a to attach", false)
+			return m, nil
 		}
 	}
 
