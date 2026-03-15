@@ -239,15 +239,6 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				m.TerminalPane.PendingCommand = ""
 				m.TerminalPane.SetStatus("new tmux session: shell | claude | ssh <host>", false)
 				return m, nil
-			case "enter", "ctrl+m":
-				if !m.TerminalPane.CommandMode {
-					if active == nil {
-						m.TerminalPane.SetStatus("no active session to attach", true)
-						return m, nil
-					}
-					m.TerminalPane.SetStatus("attaching... (detach with Ctrl+Q)", false)
-					return m, terminal.AttachCmd(m.TerminalMgr, active.ID)
-				}
 			}
 
 			if m.TerminalPane.CommandMode {
@@ -313,6 +304,10 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 		if m.Focus == ui.PaneChat || m.Focus == ui.PaneTerminal {
 			m.Mode = ui.ModeEdit
 		}
+		return m, nil
+	case "t":
+		m.Focus = ui.PaneTerminal
+		m.Mode = ui.ModeMove
 		return m, nil
 	case "h":
 		m.Focus = ui.FocusLeft(m.Focus)

@@ -16,7 +16,7 @@ func View(state State, height int) string {
 			"",
 			"When a session exists:",
 			"  Embedded pane is view-only (capture snapshot)",
-			"  MOVE/EDIT + Enter (or a) => attach for real interaction",
+			"  MOVE mode + Enter (or a) => attach for real interaction",
 			"  Detach from attach mode with Ctrl+Q",
 		}
 		if state.CommandMode {
