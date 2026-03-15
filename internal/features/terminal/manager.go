@@ -431,7 +431,7 @@ func (t *tmuxSession) Capture(historyLines int) ([]string, string, error) {
 }
 
 func (t *tmuxSession) CaptureRange(start, end string) ([]string, string, error) {
-	args := []string{"capture-pane", "-p", "-e", "-J", "-t", "=" + t.name}
+	args := []string{"capture-pane", "-p", "-e", "-J", "-t", t.paneTarget()}
 	if start != "" {
 		args = append(args, "-S", start)
 	}
@@ -480,29 +480,30 @@ func runTmux(args ...string) (string, error) {
 }
 
 func sendBytesToTmux(tmuxSession string, data []byte) error {
+	target := paneTarget(tmuxSession)
 	for len(data) > 0 {
 		if len(data) >= 3 && data[0] == 0x1b && data[1] == '[' {
 			switch data[2] {
 			case 'A':
-				if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Up"); err != nil {
+				if _, err := runTmux("send-keys", "-t", target, "Up"); err != nil {
 					return err
 				}
 				data = data[3:]
 				continue
 			case 'B':
-				if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Down"); err != nil {
+				if _, err := runTmux("send-keys", "-t", target, "Down"); err != nil {
 					return err
 				}
 				data = data[3:]
 				continue
 			case 'C':
-				if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Right"); err != nil {
+				if _, err := runTmux("send-keys", "-t", target, "Right"); err != nil {
 					return err
 				}
 				data = data[3:]
 				continue
 			case 'D':
-				if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Left"); err != nil {
+				if _, err := runTmux("send-keys", "-t", target, "Left"); err != nil {
 					return err
 				}
 				data = data[3:]
@@ -513,23 +514,23 @@ func sendBytesToTmux(tmuxSession string, data []byte) error {
 		b := data[0]
 		switch {
 		case b == '\r' || b == '\n':
-			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Enter"); err != nil {
+			if _, err := runTmux("send-keys", "-t", target, "Enter"); err != nil {
 				return err
 			}
 			data = data[1:]
 		case b == '\t':
-			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Tab"); err != nil {
+			if _, err := runTmux("send-keys", "-t", target, "Tab"); err != nil {
 				return err
 			}
 			data = data[1:]
 		case b == 0x7f:
-			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "BSpace"); err != nil {
+			if _, err := runTmux("send-keys", "-t", target, "BSpace"); err != nil {
 				return err
 			}
 			data = data[1:]
 		case b >= 1 && b <= 26:
 			ctrl := "C-" + string('a'+(b-1))
-			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, ctrl); err != nil {
+			if _, err := runTmux("send-keys", "-t", target, ctrl); err != nil {
 				return err
 			}
 			data = data[1:]
@@ -547,13 +548,21 @@ func sendBytesToTmux(tmuxSession string, data []byte) error {
 				continue
 			}
 			lit := string(data[:i])
-			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "-l", lit); err != nil {
+			if _, err := runTmux("send-keys", "-t", target, "-l", lit); err != nil {
 				return err
 			}
 			data = data[i:]
 		}
 	}
 	return nil
+}
+
+func (t *tmuxSession) paneTarget() string {
+	return paneTarget(t.name)
+}
+
+func paneTarget(session string) string {
+	return session + ":0.0"
 }
 
 func sanitizeName(s string) string {

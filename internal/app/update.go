@@ -167,13 +167,6 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			case "esc":
 				m.Mode = ui.ModeMove
 				return m, nil
-			case "ctrl+n":
-				m.Focus = ui.PaneTerminal
-				m.Mode = ui.ModeEdit
-				m.TerminalPane.CommandMode = false
-				m.TerminalPane.PendingCommand = ""
-				m.TerminalPane.SetStatus("starting shell tmux session...", false)
-				return m, terminal.StartSessionCmd(m.TerminalMgr, terminal.ShellSpec())
 			case "enter", "ctrl+m":
 				if m.ChatPane.Sending || m.ChatPane.Tailing {
 					return m, nil
@@ -291,12 +284,14 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 		m.Status = "Refreshing..."
 		return m, tea.Batch(RefreshCmd(m.Transport), DiscoverSessionCmd(m.Transport))
 	case "ctrl+n":
-		m.Focus = ui.PaneTerminal
-		m.Mode = ui.ModeEdit
-		m.TerminalPane.CommandMode = false
-		m.TerminalPane.PendingCommand = ""
-		m.TerminalPane.SetStatus("starting shell tmux session...", false)
-		return m, terminal.StartSessionCmd(m.TerminalMgr, terminal.ShellSpec())
+		if m.Focus == ui.PaneTerminal {
+			m.Mode = ui.ModeEdit
+			m.TerminalPane.CommandMode = false
+			m.TerminalPane.PendingCommand = ""
+			m.TerminalPane.SetStatus("starting shell tmux session...", false)
+			return m, terminal.StartSessionCmd(m.TerminalMgr, terminal.ShellSpec())
+		}
+		return m, nil
 	case "ctrl+t":
 		if m.Focus == ui.PaneTerminal {
 			m.Mode = ui.ModeEdit
