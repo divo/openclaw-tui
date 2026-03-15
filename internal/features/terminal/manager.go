@@ -132,6 +132,12 @@ func (m *Manager) Start(spec SessionSpec) error {
 
 	m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusRunning}})
 
+	// Nudge interactive shells so the first prompt is guaranteed to render into
+	// capture-pane (avoids confusing "(no output yet)" on startup).
+	if spec.Type == SessionTypeShell {
+		_ = t.SendKeys([]byte("\r"))
+	}
+
 	if lines, snap, err := t.Capture(300); err == nil {
 		m.mu.Lock()
 		if s, ok := m.sessions[id]; ok {
