@@ -68,17 +68,18 @@ func KillSessionCmd(mgr *Manager, sessionID string) tea.Cmd {
 }
 
 func AttachCmd(mgr *Manager, sessionID string) tea.Cmd {
-	return func() tea.Msg {
-		if sessionID == "" {
-			return AttachResultMsg{SessionID: sessionID, Err: nil}
-		}
-		done, err := mgr.Attach(sessionID)
-		if err != nil {
+	if sessionID == "" {
+		return nil
+	}
+	cmd, err := mgr.AttachCommand(sessionID)
+	if err != nil {
+		return func() tea.Msg {
 			return AttachResultMsg{SessionID: sessionID, Err: err}
 		}
-		<-done
-		return AttachResultMsg{SessionID: sessionID, Err: nil}
 	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return AttachResultMsg{SessionID: sessionID, Err: err}
+	})
 }
 
 func CaptureFullCmd(mgr *Manager, sessionID string) tea.Cmd {

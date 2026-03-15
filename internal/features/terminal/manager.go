@@ -283,6 +283,27 @@ func (m *Manager) Attach(sessionID string) (<-chan struct{}, error) {
 	return done, nil
 }
 
+func (m *Manager) AttachCommand(sessionID string) (*exec.Cmd, error) {
+	rs, err := m.getSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure detached window has current terminal size before attach.
+	if w, h, e := term.GetSize(os.Stdout.Fd()); e == nil {
+		_, _ = runTmux("resize-window", "-t", rs.tmuxSession, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h))
+	}
+	// Mirror Claude-Squad detach chord for attach mode.
+	_, _ = runTmux("bind-key", "-n", "C-q", "detach-client")
+
+	cmd := exec.Command("tmux", "attach-session", "-t", rs.tmuxSession)
+	cmd.Env = os.Environ()
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd, nil
+}
+
 func (m *Manager) CaptureFull(sessionID string) ([]string, error) {
 	rs, err := m.getSession(sessionID)
 	if err != nil {
