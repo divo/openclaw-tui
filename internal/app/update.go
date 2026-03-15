@@ -224,6 +224,7 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 		if m.Focus == ui.PaneTerminal {
 			active := m.TerminalPane.ActiveSession()
 
+			// Terminal command entry mode (Ctrl+t) has app-owned keys.
 			if m.TerminalPane.CommandMode {
 				switch k.String() {
 				case "esc":
@@ -251,19 +252,32 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				}
 			}
 
+			// No active terminal session yet: allow session creation controls.
 			if active == nil {
-				m.TerminalPane.SetStatus("no active session; press Ctrl+n for shell (or Ctrl+t for custom)", true)
-				return m, nil
+				switch k.String() {
+				case "ctrl+n":
+					m.TerminalPane.SetStatus("starting shell tmux session...", false)
+					return m, terminal.StartSessionCmd(m.TerminalMgr, terminal.ShellSpec())
+				case "ctrl+t":
+					m.TerminalPane.CommandMode = true
+					m.TerminalPane.PendingCommand = ""
+					m.TerminalPane.SetStatus("new tmux session: shell | claude | ssh <host>", false)
+					return m, nil
+				case "esc":
+					m.Mode = ui.ModeMove
+					return m, nil
+				default:
+					m.TerminalPane.SetStatus("no active session; press Ctrl+n for shell (or Ctrl+t for custom)", true)
+					return m, nil
+				}
 			}
 
-			// In terminal input mode, forward everything to the shell except Ctrl+]
-			// which returns to MOVE mode.
+			// Terminal input mode: forward everything except Ctrl+] app escape hatch.
 			if k.String() == "ctrl+]" {
 				m.Mode = ui.ModeMove
 				m.TerminalPane.SetStatus("terminal MOVE mode", false)
 				return m, nil
 			}
-
 			return m, forwardTerminalKey(active.ID, k, m.TerminalMgr)
 		}
 	}

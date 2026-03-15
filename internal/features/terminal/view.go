@@ -12,7 +12,7 @@ func View(state State, height int) string {
 			"",
 			"Create tmux sessions:",
 			"  MOVE on Terminal: Ctrl+n starts a shell",
-			"  EDIT on Terminal: Ctrl+t opens custom command mode (shell|claude|ssh <host>)",
+			"  MOVE on Terminal: Ctrl+t opens custom command mode (shell|claude|ssh <host>)",
 			"",
 			"When a session exists:",
 			"  MOVE mode + Enter (or a) => in-pane input mode",
