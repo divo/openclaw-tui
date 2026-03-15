@@ -41,6 +41,12 @@ type State struct {
 	LastStatusLine  string
 	LastStatusIsErr bool
 	LastErrorAt     time.Time
+
+	// Resize observability for terminal parity debugging.
+	Cols             int
+	Rows             int
+	LastResizeSource string
+	LastResizeAt     time.Time
 }
 
 func InitialState() State {
@@ -160,6 +166,13 @@ func (s *State) SetStatus(line string, isErr bool) {
 	if isErr {
 		s.LastErrorAt = time.Now()
 	}
+}
+
+func (s *State) RecordResize(cols, rows int, source string) {
+	s.Cols = cols
+	s.Rows = rows
+	s.LastResizeSource = source
+	s.LastResizeAt = time.Now()
 }
 
 func (s *State) EnterScrollMode(lines []string) {

@@ -148,9 +148,14 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 		m.Width = x.Width
 		m.Height = x.Height
 		dims := ui.ComputeDimensions(m.Width, m.Height)
-		// Detached in-pane terminal should match the pane dimensions.
+		// Detached in-pane terminal should match pane dimensions and only update
+		// when effective cols/rows actually change.
 		termW := max(20, m.Width-2)
 		termH := max(6, dims.TerminalH-2)
+		if m.TerminalPane.Cols == termW && m.TerminalPane.Rows == termH {
+			return m, nil
+		}
+		m.TerminalPane.RecordResize(termW, termH, "window")
 		return m, terminal.ResizeAllCmd(m.TerminalMgr, termW, termH)
 
 	case tea.KeyMsg:

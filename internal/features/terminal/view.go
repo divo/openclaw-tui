@@ -67,10 +67,18 @@ func View(state State, height int) string {
 }
 
 func StatusLine(state State) string {
-	if state.LastStatusLine == "" {
-		return "terminal: idle"
+	line := state.LastStatusLine
+	if line == "" {
+		line = "idle"
 	}
-	return "terminal: " + state.LastStatusLine
+	if state.Cols > 0 && state.Rows > 0 {
+		if state.LastResizeSource != "" {
+			line += fmt.Sprintf(" | %dx%d via %s", state.Cols, state.Rows, state.LastResizeSource)
+		} else {
+			line += fmt.Sprintf(" | %dx%d", state.Cols, state.Rows)
+		}
+	}
+	return "terminal: " + line
 }
 
 func min(a, b int) int {
