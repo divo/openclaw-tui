@@ -223,26 +223,14 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 
 		if m.Focus == ui.PaneTerminal {
 			active := m.TerminalPane.ActiveSession()
-			switch k.String() {
-			case "esc":
-				m.Mode = ui.ModeMove
-				m.TerminalPane.CommandMode = false
-				m.TerminalPane.PendingCommand = ""
-				return m, nil
-			case "ctrl+n":
-				m.TerminalPane.CommandMode = false
-				m.TerminalPane.PendingCommand = ""
-				m.TerminalPane.SetStatus("starting shell tmux session...", false)
-				return m, terminal.StartSessionCmd(m.TerminalMgr, terminal.ShellSpec())
-			case "ctrl+t":
-				m.TerminalPane.CommandMode = true
-				m.TerminalPane.PendingCommand = ""
-				m.TerminalPane.SetStatus("new tmux session: shell | claude | ssh <host>", false)
-				return m, nil
-			}
 
 			if m.TerminalPane.CommandMode {
 				switch k.String() {
+				case "esc":
+					m.TerminalPane.CommandMode = false
+					m.TerminalPane.PendingCommand = ""
+					m.TerminalPane.SetStatus("terminal input mode", false)
+					return m, nil
 				case "enter", "ctrl+m":
 					spec, err := terminal.ParseCreateCommand(m.TerminalPane.PendingCommand)
 					m.TerminalPane.CommandMode = false
@@ -267,6 +255,14 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				m.TerminalPane.SetStatus("no active session; press Ctrl+n for shell (or Ctrl+t for custom)", true)
 				return m, nil
 			}
+
+			switch k.String() {
+			case "ctrl+]":
+				m.Mode = ui.ModeMove
+				m.TerminalPane.SetStatus("terminal MOVE mode", false)
+				return m, nil
+			}
+
 			return m, forwardTerminalKey(active.ID, k, m.TerminalMgr)
 		}
 	}
@@ -344,7 +340,7 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			active := m.TerminalPane.ActiveSession()
 			if active != nil {
 				m.Mode = ui.ModeEdit
-				m.TerminalPane.SetStatus("terminal input mode (in-pane). Esc to return MOVE", false)
+				m.TerminalPane.SetStatus("terminal input mode (in-pane). Ctrl+] returns to MOVE", false)
 				return m, nil
 			}
 			m.TerminalPane.SetStatus("no active session", true)

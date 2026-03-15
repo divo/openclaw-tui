@@ -257,6 +257,10 @@ func (m *Manager) ResizeAll(width, height int) {
 		return
 	}
 	m.mu.Lock()
+	if m.desiredCols == width && m.desiredRows == height {
+		m.mu.Unlock()
+		return
+	}
 	m.desiredCols, m.desiredRows = width, height
 	sessions := make([]*runtimeSession, 0, len(m.sessions))
 	for _, s := range m.sessions {

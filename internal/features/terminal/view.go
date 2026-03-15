@@ -11,11 +11,12 @@ func View(state State, height int) string {
 			"No terminal sessions.",
 			"",
 			"Create tmux sessions:",
-			"  MOVE: S (or Ctrl+n on Terminal) starts a shell",
+			"  MOVE on Terminal: Ctrl+n starts a shell",
 			"  EDIT on Terminal: Ctrl+t opens custom command mode (shell|claude|ssh <host>)",
 			"",
 			"When a session exists:",
 			"  MOVE mode + Enter (or a) => in-pane input mode",
+			"  In-pane input: Ctrl+] returns to MOVE",
 			"  Press A for optional fullscreen attach",
 			"  Detach fullscreen with Ctrl+Q",
 		}
