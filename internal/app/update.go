@@ -267,10 +267,7 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				m.TerminalPane.SetStatus("no active session; press Ctrl+n for shell (or Ctrl+t for custom)", true)
 				return m, nil
 			}
-			// Embedded pane is capture-only for reliability.
-			// Use attach for real interactive terminal use.
-			m.TerminalPane.SetStatus("embedded terminal is view-only; press Enter/a to attach", false)
-			return m, nil
+			return m, forwardTerminalKey(active.ID, k, m.TerminalMgr)
 		}
 	}
 
@@ -286,9 +283,8 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 	case "r":
 		m.Status = "Refreshing..."
 		return m, tea.Batch(RefreshCmd(m.Transport), DiscoverSessionCmd(m.Transport))
-	case "S", "ctrl+n":
-		if k.String() == "S" || m.Focus == ui.PaneTerminal {
-			m.Focus = ui.PaneTerminal
+	case "ctrl+n":
+		if m.Focus == ui.PaneTerminal {
 			m.Mode = ui.ModeMove
 			m.TerminalPane.CommandMode = false
 			m.TerminalPane.PendingCommand = ""
@@ -347,7 +343,18 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 		if m.Focus == ui.PaneTerminal {
 			active := m.TerminalPane.ActiveSession()
 			if active != nil {
-				m.TerminalPane.SetStatus("attaching... (detach with Ctrl+Q)", false)
+				m.Mode = ui.ModeEdit
+				m.TerminalPane.SetStatus("terminal input mode (in-pane). Esc to return MOVE", false)
+				return m, nil
+			}
+			m.TerminalPane.SetStatus("no active session", true)
+		}
+		return m, nil
+	case "A":
+		if m.Focus == ui.PaneTerminal {
+			active := m.TerminalPane.ActiveSession()
+			if active != nil {
+				m.TerminalPane.SetStatus("fullscreen attach... (detach with Ctrl+Q)", false)
 				return m, terminal.AttachCmd(m.TerminalMgr, active.ID)
 			}
 			m.TerminalPane.SetStatus("no active session to attach", true)

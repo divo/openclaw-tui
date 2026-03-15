@@ -140,14 +140,14 @@ func (m *Manager) Start(spec SessionSpec) error {
 	return nil
 }
 
-// Write is retained for compatibility but the embedded pane is intentionally
-// view-only. Real interaction is via Attach.
+// Write sends bytes to the detached tmux PTY so terminal interaction can
+// happen directly in the embedded pane (capture updates rendered in-pane).
 func (m *Manager) Write(sessionID string, data []byte) error {
 	rs, err := m.getSession(sessionID)
 	if err != nil {
 		return err
 	}
-	return sendBytesToTmux(rs.tmuxSession.name, data)
+	return rs.tmuxSession.SendKeys(data)
 }
 
 func (m *Manager) Kill(sessionID string) error {
@@ -264,7 +264,7 @@ func (m *Manager) Shutdown() {
 }
 
 func (m *Manager) pollLoop() {
-	ticker := time.NewTicker(350 * time.Millisecond)
+	ticker := time.NewTicker(60 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -447,6 +447,14 @@ func (t *tmuxSession) SetDetachedSize(width, height int) error {
 		return nil
 	}
 	return pty.Setsize(t.ptmx, &pty.Winsize{Rows: uint16(height), Cols: uint16(width)})
+}
+
+func (t *tmuxSession) SendKeys(data []byte) error {
+	if t.ptmx == nil {
+		return fmt.Errorf("tmux detached pty not ready")
+	}
+	_, err := t.ptmx.Write(data)
+	return err
 }
 
 func runTmux(args ...string) (string, error) {

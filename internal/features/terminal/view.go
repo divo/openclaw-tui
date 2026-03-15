@@ -15,9 +15,9 @@ func View(state State, height int) string {
 			"  EDIT on Terminal: Ctrl+t opens custom command mode (shell|claude|ssh <host>)",
 			"",
 			"When a session exists:",
-			"  Embedded pane is view-only (capture snapshot)",
-			"  MOVE mode + Enter (or a) => attach for real interaction",
-			"  Detach from attach mode with Ctrl+Q",
+			"  MOVE mode + Enter (or a) => in-pane input mode",
+			"  Press A for optional fullscreen attach",
+			"  Detach fullscreen with Ctrl+Q",
 		}
 		if state.CommandMode {
 			body = append(body, "", "> "+state.PendingCommand)
