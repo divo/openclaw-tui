@@ -25,7 +25,10 @@ func ShellSpec() SessionSpec {
 	if shell == "" {
 		shell = "bash"
 	}
-	return SessionSpec{Name: "shell", Type: SessionTypeShell, Cmd: shell}
+	// Force interactive mode so prompts render in the detached capture pane.
+	// Without -i some shells behave non-interactively (no prompt), which looks
+	// like a dead "(no output yet)" pane.
+	return SessionSpec{Name: "shell", Type: SessionTypeShell, Cmd: shell, Args: []string{"-i"}}
 }
 
 func ClaudeSpec() SessionSpec {
