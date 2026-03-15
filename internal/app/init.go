@@ -34,7 +34,9 @@ func DiscoverSessionCmd(t transport.Transport) tea.Cmd {
 		if err != nil {
 			return msg.SessionDiscoverMsg{Err: err}
 		}
-		return msg.SessionDiscoverMsg{SessionKey: key}
+		// Best-effort: resolve the JSONL file path so we can tail replies.
+		filePath, _ := t.ResolveSessionFilePath(key)
+		return msg.SessionDiscoverMsg{SessionKey: key, SessionFilePath: filePath}
 	}
 }
 

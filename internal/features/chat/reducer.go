@@ -106,6 +106,50 @@ func compactLine(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// ProcessTailLines consumes a ChatTailMsg from the JSONL poller and updates
+// the chat state. Returns the updated state and whether the turn is complete.
+func ProcessTailLines(state State, m msg.ChatTailMsg) (State, bool) {
+	sawFinal := false
+	for _, line := range m.Lines {
+		p := ParseJSONLLine(line)
+		if p == nil {
+			continue
+		}
+		switch {
+		case p.IsError:
+			state.Lines = append(state.Lines,
+				fmt.Sprintf("↳ [%03d] agent error: %s", state.ActiveMsgID, p.StopReason),
+			)
+			sawFinal = true
+		case len(p.ToolNames) > 0:
+			state.Lines = append(state.Lines,
+				fmt.Sprintf("↳ [%03d] ⚙  %s", state.ActiveMsgID, strings.Join(p.ToolNames, ", ")),
+			)
+		case p.IsFinal:
+			state.Lines = append(state.Lines, fmt.Sprintf("↳ [%03d] done", state.ActiveMsgID))
+			for _, l := range strings.Split(p.Text, "\n") {
+				state.Lines = append(state.Lines, "Amerish: "+compactLine(l, 180))
+			}
+			sawFinal = true
+		}
+	}
+	state.FollowTail = true
+	trimLines(&state)
+
+	if m.Err != nil && !sawFinal {
+		state.Lines = append(state.Lines,
+			fmt.Sprintf("↳ [%03d] tail error: %s", state.ActiveMsgID, m.Err.Error()),
+		)
+		return ClearActive(state), true
+	}
+
+	done := m.Done || sawFinal
+	if done {
+		return ClearActive(state), true
+	}
+	return state, false
+}
+
 func isTimeoutError(err error) bool {
 	if err == nil {
 		return false

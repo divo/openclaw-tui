@@ -30,6 +30,11 @@ type State struct {
 	PendingMsg     string
 	PendingMsgID   int
 	PendingAttempt int
+
+	// Tail tracks the async reply stream via the session JSONL file.
+	TailFilePath string
+	TailOffset   int64
+	Tailing      bool
 }
 
 func InitialState() State {
@@ -43,6 +48,22 @@ func InitialState() State {
 		FollowTail:   true,
 		HistoryIndex: -1,
 	}
+}
+
+// BeginSendAsync marks a turn as in-flight for the async (JSONL tail) path.
+// Unlike BeginSend it doesn't show an attempt counter — there is only one shot.
+func BeginSendAsync(state State) State {
+	if state.ActiveMsgID == 0 {
+		return state
+	}
+	state.Sending = true
+	state.StartedAt = time.Now()
+	state.Lines = append(state.Lines,
+		fmt.Sprintf("↳ [%03d] sending...", state.ActiveMsgID),
+	)
+	state.FollowTail = true
+	trimLines(&state)
+	return state
 }
 
 func StartSend(state State, prompt string) State {

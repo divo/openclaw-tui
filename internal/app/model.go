@@ -43,9 +43,10 @@ type Model struct {
 	Status      string
 	LastRefresh time.Time
 
-	SessionKey string
-	Conn       ConnState
-	Errors     []string
+	SessionKey      string
+	SessionFilePath string
+	Conn            ConnState
+	Errors          []string
 
 	Focus ui.Pane
 	Mode  ui.Mode

@@ -34,3 +34,22 @@ func TestParseMainSessionKey(t *testing.T) {
 		t.Fatalf("ParseMainSessionKey() = %q, want %q", got, "agent:main:main")
 	}
 }
+
+func TestParseSessionStorePath(t *testing.T) {
+	raw := `Session store: /home/user/.openclaw/agents/main/sessions/sessions.json
+Sessions listed: 3
+Kind   Key   Age
+direct agent:main:main 1m ago`
+
+	got := ParseSessionStorePath(raw)
+	want := "/home/user/.openclaw/agents/main/sessions/sessions.json"
+	if got != want {
+		t.Fatalf("ParseSessionStorePath() = %q, want %q", got, want)
+	}
+}
+
+func TestParseSessionStorePath_missing(t *testing.T) {
+	if ParseSessionStorePath("no store path here") != "" {
+		t.Fatal("expected empty string when not found")
+	}
+}

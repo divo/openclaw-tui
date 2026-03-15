@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -45,9 +47,24 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 			m.ChatPane.Lines = append(m.ChatPane.Lines, "⚡ connected → "+x.SessionKey)
 		}
 		m.SessionKey = x.SessionKey
+		if x.SessionFilePath != "" {
+			m.SessionFilePath = x.SessionFilePath
+		}
 		m.Conn = ConnConnected
 		if m.ChatPane.PendingMsg != "" {
 			m.ChatPane = chat.BeginPendingSend(m.ChatPane)
+			if m.SessionFilePath != "" {
+				if info, err := os.Stat(m.SessionFilePath); err == nil {
+					m.ChatPane.TailOffset = info.Size()
+				}
+				m.ChatPane.TailFilePath = m.SessionFilePath
+				return m, chat.SendAgentFireCmd(
+					m.Transport,
+					m.SessionKey,
+					m.ChatPane.ActivePrompt,
+					m.ChatPane.ActiveMsgID,
+				)
+			}
 			return m, chat.SendChatCmd(
 				m.Transport,
 				m.SessionKey,
@@ -92,6 +109,27 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 			m.ChatPane.ActiveAttempt,
 		)
 
+	case msg.ChatAgentFiredMsg:
+		// Agent turn started in background — begin tailing the JSONL file.
+		m.ChatPane.Lines = append(m.ChatPane.Lines,
+			fmt.Sprintf("↳ [%03d] queued — watching for reply...", x.MessageID),
+		)
+		m.ChatPane.FollowTail = true
+		m.ChatPane.Tailing = true
+		return m, chat.TailCmd(m.Transport, m.ChatPane.TailFilePath, m.ChatPane.TailOffset, x.Done)
+
+	case msg.ChatTailMsg:
+		m.ChatPane.TailOffset = x.NewOffset
+		newState, done := chat.ProcessTailLines(m.ChatPane, x)
+		m.ChatPane = newState
+		if done {
+			m.ChatPane.Tailing = false
+			return m, nil
+		}
+		// Not done yet — schedule next poll, passing nil for agentDone since we
+		// already checked it above and don't have it anymore.
+		return m, chat.TailCmd(m.Transport, m.ChatPane.TailFilePath, m.ChatPane.TailOffset, nil)
+
 	case terminal.EventMsg:
 		return m, terminal.WaitEventCmd(m.TerminalMgr)
 
@@ -118,7 +156,7 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				m.Mode = ui.ModeMove
 				return m, nil
 			case "enter":
-				if m.ChatPane.Sending {
+				if m.ChatPane.Sending || m.ChatPane.Tailing {
 					return m, nil
 				}
 				prompt := strings.TrimSpace(m.ChatPane.Input)
@@ -131,6 +169,21 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 					m.ChatPane.Lines = append(m.ChatPane.Lines, "⏳ reconnecting session...")
 					return m, DiscoverSessionCmd(m.Transport)
 				}
+				// Async path: fire agent in background, tail JSONL for reply.
+				if m.SessionFilePath != "" {
+					if info, err := os.Stat(m.SessionFilePath); err == nil {
+						m.ChatPane.TailOffset = info.Size()
+					}
+					m.ChatPane.TailFilePath = m.SessionFilePath
+					m.ChatPane = chat.BeginSendAsync(m.ChatPane)
+					return m, chat.SendAgentFireCmd(
+						m.Transport,
+						m.SessionKey,
+						m.ChatPane.ActivePrompt,
+						m.ChatPane.ActiveMsgID,
+					)
+				}
+				// Fallback: sync path (no session file available).
 				m.ChatPane = chat.BeginSend(m.ChatPane)
 				return m, chat.SendChatCmd(
 					m.Transport,
