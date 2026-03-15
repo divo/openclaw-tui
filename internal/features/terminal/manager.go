@@ -86,6 +86,7 @@ type Manager struct {
 	stopCh      chan struct{}
 	desiredCols int
 	desiredRows int
+	sizeLocked  bool
 }
 
 func NewManager() *Manager {
@@ -257,11 +258,15 @@ func (m *Manager) ResizeAll(width, height int) {
 		return
 	}
 	m.mu.Lock()
-	if m.desiredCols == width && m.desiredRows == height {
+	// Lock terminal size after first valid measurement. This prevents apps
+	// inside the embedded shell (e.g. nvim popups) from indirectly triggering
+	// resize churn through repeated size events.
+	if m.sizeLocked {
 		m.mu.Unlock()
 		return
 	}
 	m.desiredCols, m.desiredRows = width, height
+	m.sizeLocked = true
 	sessions := make([]*runtimeSession, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		sessions = append(sessions, s)

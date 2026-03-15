@@ -421,6 +421,8 @@ func scrollFocused(m *Model, delta int) {
 
 func forwardTerminalKey(sessionID string, k tea.KeyMsg, mgr *terminal.Manager) tea.Cmd {
 	switch k.String() {
+	case "esc":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte{0x1b})
 	case "enter", "ctrl+m":
 		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\r"))
 	case "tab":
