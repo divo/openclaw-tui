@@ -110,7 +110,7 @@ func (m Model) View() string {
 	tasksPane := ui.PaneBox("Tasks", m.Focus == ui.PaneTasks, dims.RightW, dims.TopH, tasks.View(m.TasksPane.Items, m.TasksPane.Offset, dims.TopH-2))
 	top := lipgloss.JoinHorizontal(lipgloss.Top, leftTop, tasksPane)
 
-	chatBody := chat.View(m.ChatPane.Lines, m.ChatPane.Offset, m.ChatPane.Input, m.ChatPane.Sending, m.Mode, dims.ChatH-2)
+	chatBody := chat.View(m.ChatPane, m.Mode, dims.ChatH-2)
 	chatPane := ui.PaneBox("Chat", m.Focus == ui.PaneChat, m.Width, dims.ChatH, chatBody)
 
 	terminalBody := terminal.View(m.TerminalPane, dims.TerminalH-2)
@@ -120,7 +120,7 @@ func (m Model) View() string {
 	runStatusLine += " | " + terminal.StatusLine(m.TerminalPane)
 	runStatusPane := ui.PaneBox("Run Status", false, m.Width, dims.RunH, runStatusLine)
 
-	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, n/p term session, x kill, r refresh, q quit | EDIT: i (Chat/Terminal), Enter send/newline, Ctrl+n new terminal, Esc back")
+	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, G tail, n/p term session, x kill, r refresh, q quit | EDIT: i (Chat/Terminal), ↑↓ history, Enter send, Ctrl+n new terminal, Esc back")
 
 	parts := []string{header, top, chatPane, terminalPane, runStatusPane}
 	if len(m.Errors) > 0 {

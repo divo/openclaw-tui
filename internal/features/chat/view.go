@@ -8,7 +8,10 @@ import (
 	"openclaw-tui/internal/ui"
 )
 
-func View(lines []string, offset int, input string, sending bool, mode ui.Mode, height int) string {
+func View(state State, mode ui.Mode, height int) string {
+	lines := state.Lines
+	input := state.Input
+	sending := state.Sending
 	if height < 2 {
 		return "> " + input
 	}
@@ -19,7 +22,10 @@ func View(lines []string, offset int, input string, sending bool, mode ui.Mode, 
 	if len(lines) == 0 {
 		lines = []string{"(no messages yet)"}
 	}
-	if offset > len(lines)-1 {
+	offset := state.Offset
+	if state.FollowTail {
+		offset = max(0, len(lines)-available)
+	} else if offset > len(lines)-1 {
 		offset = max(0, len(lines)-1)
 	}
 	end := min(len(lines), offset+available)

@@ -139,6 +139,12 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 					m.ChatPane.ActiveMsgID,
 					m.ChatPane.ActiveAttempt,
 				)
+			case "up":
+				m.ChatPane = chat.HistoryPrev(m.ChatPane)
+				return m, nil
+			case "down":
+				m.ChatPane = chat.HistoryNext(m.ChatPane)
+				return m, nil
 			case "backspace", "ctrl+h":
 				m.ChatPane.Input = trimLastRune(m.ChatPane.Input)
 				return m, nil
@@ -248,6 +254,11 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 	case "ctrl+u":
 		scrollFocused(&m, -5)
 		return m, nil
+	case "G":
+		if m.Focus == ui.PaneChat {
+			m.ChatPane = chat.FollowLatest(m.ChatPane)
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -261,7 +272,7 @@ func scrollFocused(m *Model, delta int) {
 	case ui.PaneTasks:
 		m.TasksPane.Offset = max(0, m.TasksPane.Offset+delta)
 	case ui.PaneChat:
-		m.ChatPane.Offset = max(0, m.ChatPane.Offset+delta)
+		m.ChatPane = chat.Scroll(m.ChatPane, delta)
 	case ui.PaneTerminal:
 		active := m.TerminalPane.ActiveSession()
 		if active != nil {
