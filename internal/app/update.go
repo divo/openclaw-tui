@@ -155,7 +155,7 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			case "esc":
 				m.Mode = ui.ModeMove
 				return m, nil
-			case "enter":
+			case "enter", "ctrl+m":
 				if m.ChatPane.Sending || m.ChatPane.Tailing {
 					return m, nil
 				}
@@ -220,13 +220,22 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			case "ctrl+n":
 				m.TerminalPane.CommandMode = true
 				m.TerminalPane.PendingCommand = ""
-				m.TerminalPane.SetStatus("new session command: shell | claude | ssh <host>", false)
+				m.TerminalPane.SetStatus("new tmux session: shell | claude | ssh <host>", false)
 				return m, nil
+			case "enter", "ctrl+m":
+				if !m.TerminalPane.CommandMode {
+					if active == nil {
+						m.TerminalPane.SetStatus("no active session to attach", true)
+						return m, nil
+					}
+					m.TerminalPane.SetStatus("attaching... (detach with Ctrl+b then d)", false)
+					return m, terminal.AttachCmd(m.TerminalMgr, active.ID)
+				}
 			}
 
 			if m.TerminalPane.CommandMode {
 				switch k.String() {
-				case "enter":
+				case "enter", "ctrl+m":
 					spec, err := terminal.ParseCreateCommand(m.TerminalPane.PendingCommand)
 					m.TerminalPane.CommandMode = false
 					m.TerminalPane.PendingCommand = ""
@@ -295,13 +304,14 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-	case "enter":
+	case "enter", "ctrl+m":
 		if m.Focus == ui.PaneTerminal {
 			active := m.TerminalPane.ActiveSession()
 			if active != nil {
 				m.TerminalPane.SetStatus("attaching... (detach with Ctrl+b then d)", false)
 				return m, terminal.AttachCmd(m.TerminalMgr, active.ID)
 			}
+			m.TerminalPane.SetStatus("no active session to attach", true)
 		}
 		return m, nil
 	case "J":
@@ -345,7 +355,7 @@ func scrollFocused(m *Model, delta int) {
 
 func forwardTerminalKey(sessionID string, k tea.KeyMsg, mgr *terminal.Manager) tea.Cmd {
 	switch k.String() {
-	case "enter":
+	case "enter", "ctrl+m":
 		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\r"))
 	case "tab":
 		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\t"))

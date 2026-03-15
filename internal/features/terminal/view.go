@@ -10,7 +10,7 @@ func View(state State, height int) string {
 		body := []string{
 			"No terminal sessions.",
 			"",
-			"Create sessions from Terminal pane in EDIT mode:",
+			"Create tmux sessions from Terminal pane in EDIT mode:",
 			"  Ctrl+n then one of:",
 			"    shell",
 			"    claude",
