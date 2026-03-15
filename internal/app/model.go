@@ -121,7 +121,7 @@ func (m Model) View() string {
 	runStatusLine += " | " + terminal.StatusLine(m.TerminalPane)
 	runStatusPane := ui.PaneBox("Run Status", false, m.Width, dims.RunH, runStatusLine)
 
-	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, G tail, n/p term session, x kill, r refresh, q quit | EDIT: i (Chat/Terminal), ↑↓ history, Enter send, Ctrl+n new terminal, Esc back")
+	footer := muted.Render("MOVE: hjkl focus, J/K scroll, Ctrl+d/u page, G tail, n/p term session, Enter attach, x kill, r refresh, q quit | EDIT: i (Chat/Terminal), ↑↓ history, Enter send, Ctrl+n new terminal, Esc back")
 
 	parts := []string{header, top, chatPane, terminalPane, runStatusPane}
 	if len(m.Errors) > 0 {

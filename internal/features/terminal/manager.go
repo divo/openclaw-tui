@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
-	"syscall"
 	"time"
-
-	"github.com/creack/pty"
 )
 
 type SessionSpec struct {
@@ -48,9 +46,9 @@ type Event interface{ isTerminalEvent() }
 
 type SessionEvent struct{ Meta SessionMeta }
 
-type OutputEvent struct {
+type CaptureEvent struct {
 	SessionID string
-	Chunk     string
+	Lines     []string
 }
 
 type ExitEvent struct {
@@ -62,15 +60,15 @@ type ExitEvent struct {
 type ManagerErrorEvent struct{ Err string }
 
 func (SessionEvent) isTerminalEvent()      {}
-func (OutputEvent) isTerminalEvent()       {}
+func (CaptureEvent) isTerminalEvent()      {}
 func (ExitEvent) isTerminalEvent()         {}
 func (ManagerErrorEvent) isTerminalEvent() {}
 
 type runtimeSession struct {
-	id   string
-	spec SessionSpec
-	cmd  *exec.Cmd
-	pty  *os.File
+	id           string
+	spec         SessionSpec
+	tmuxSession  string
+	lastSnapshot string
 }
 
 type Manager struct {
@@ -78,13 +76,17 @@ type Manager struct {
 	sessions map[string]*runtimeSession
 	nextID   int
 	events   chan Event
+	stopCh   chan struct{}
 }
 
 func NewManager() *Manager {
-	return &Manager{
+	m := &Manager{
 		sessions: map[string]*runtimeSession{},
 		events:   make(chan Event, 256),
+		stopCh:   make(chan struct{}),
 	}
+	go m.pollLoop()
+	return m
 }
 
 func (m *Manager) Events() <-chan Event { return m.events }
@@ -93,71 +95,98 @@ func (m *Manager) Start(spec SessionSpec) error {
 	if spec.Cmd == "" {
 		return fmt.Errorf("empty command")
 	}
-
-	m.mu.Lock()
-	m.nextID++
-	id := fmt.Sprintf("t%03d", m.nextID)
-	meta := SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusStarting}
-	m.mu.Unlock()
-	m.emit(SessionEvent{Meta: meta})
-
-	cmd := exec.Command(spec.Cmd, spec.Args...)
-	cmd.Env = append(os.Environ(), spec.Env...)
-
-	f, err := pty.Start(cmd)
-	if err != nil {
-		m.emit(ManagerErrorEvent{Err: fmt.Sprintf("start %s: %v", spec.Name, err)})
-		m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusError, Err: err.Error()}})
+	if _, err := exec.LookPath("tmux"); err != nil {
+		err = fmt.Errorf("tmux not found in PATH")
+		m.emit(ManagerErrorEvent{Err: err.Error()})
 		return err
 	}
 
-	r := &runtimeSession{id: id, spec: spec, cmd: cmd, pty: f}
-
 	m.mu.Lock()
-	m.sessions[id] = r
+	m.nextID++
+	idNum := m.nextID
+	id := fmt.Sprintf("t%03d", idNum)
+	tmuxName := fmt.Sprintf("octui_%s_%03d_%d", sanitizeName(spec.Type), idNum, time.Now().UnixNano()%1_000_000)
+	m.mu.Unlock()
+
+	m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusStarting}})
+
+	args := []string{"new-session", "-d", "-s", tmuxName, spec.Cmd}
+	args = append(args, spec.Args...)
+	cmd := exec.Command("tmux", args...)
+	cmd.Env = append(os.Environ(), spec.Env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		m.emit(ManagerErrorEvent{Err: fmt.Sprintf("start %s: %s", spec.Name, msg)})
+		m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusError, Err: msg}})
+		return err
+	}
+
+	rs := &runtimeSession{id: id, spec: spec, tmuxSession: tmuxName}
+	m.mu.Lock()
+	m.sessions[id] = rs
 	m.mu.Unlock()
 
 	m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusRunning}})
-	go m.readLoop(r)
-	go m.waitLoop(r)
+
+	if lines, snap, err := m.capture(tmuxName, 300); err == nil {
+		m.mu.Lock()
+		if s, ok := m.sessions[id]; ok {
+			s.lastSnapshot = snap
+		}
+		m.mu.Unlock()
+		m.emit(CaptureEvent{SessionID: id, Lines: lines})
+	}
 	return nil
 }
 
 func (m *Manager) Write(sessionID string, data []byte) error {
-	m.mu.Lock()
-	rs, ok := m.sessions[sessionID]
-	m.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("session %s not found", sessionID)
+	rs, err := m.getSession(sessionID)
+	if err != nil {
+		return err
 	}
-	_, err := rs.pty.Write(data)
-	return err
+	return sendBytesToTmux(rs.tmuxSession, data)
 }
 
 func (m *Manager) Kill(sessionID string) error {
-	m.mu.Lock()
-	rs, ok := m.sessions[sessionID]
-	m.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("session %s not found", sessionID)
-	}
-	if rs.cmd.Process == nil {
-		return nil
-	}
-	if err := rs.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	rs, err := m.getSession(sessionID)
+	if err != nil {
 		return err
 	}
-
-	go func() {
-		timer := time.NewTimer(800 * time.Millisecond)
-		defer timer.Stop()
-		<-timer.C
-		_ = rs.cmd.Process.Kill()
-	}()
+	if _, err := runTmux("kill-session", "-t", rs.tmuxSession); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	delete(m.sessions, sessionID)
+	m.mu.Unlock()
+	m.emit(ExitEvent{SessionID: sessionID, ExitCode: 0})
 	return nil
 }
 
+func (m *Manager) AttachCommand(sessionID string) (*exec.Cmd, error) {
+	rs, err := m.getSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("tmux", "attach-session", "-t", rs.tmuxSession)
+	cmd.Env = os.Environ()
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd, nil
+}
+
 func (m *Manager) Shutdown() {
+	select {
+	case <-m.stopCh:
+		// already closed
+	default:
+		close(m.stopCh)
+	}
+
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.sessions))
 	for id := range m.sessions {
@@ -169,46 +198,210 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-func (m *Manager) readLoop(rs *runtimeSession) {
-	buf := make([]byte, 4096)
+func (m *Manager) pollLoop() {
+	ticker := time.NewTicker(350 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
-		n, err := rs.pty.Read(buf)
-		if n > 0 {
-			m.emit(OutputEvent{SessionID: rs.id, Chunk: string(buf[:n])})
-		}
-		if err != nil {
+		select {
+		case <-ticker.C:
+			m.pollOnce()
+		case <-m.stopCh:
 			return
 		}
 	}
 }
 
-func (m *Manager) waitLoop(rs *runtimeSession) {
-	err := rs.cmd.Wait()
-	exitCode := 0
-	errStr := ""
-	if err != nil {
-		errStr = err.Error()
-		if ee, ok := err.(*exec.ExitError); ok {
-			exitCode = ee.ExitCode()
-		}
+func (m *Manager) pollOnce() {
+	type item struct {
+		id   string
+		name string
+		last string
 	}
-	_ = rs.pty.Close()
-
 	m.mu.Lock()
-	delete(m.sessions, rs.id)
+	items := make([]item, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		items = append(items, item{id: s.id, name: s.tmuxSession, last: s.lastSnapshot})
+	}
 	m.mu.Unlock()
 
-	m.emit(ExitEvent{SessionID: rs.id, ExitCode: exitCode, Err: errStr})
+	for _, it := range items {
+		has, err := tmuxHasSession(it.name)
+		if err != nil {
+			m.emit(ManagerErrorEvent{Err: "tmux has-session: " + err.Error()})
+			continue
+		}
+		if !has {
+			m.mu.Lock()
+			delete(m.sessions, it.id)
+			m.mu.Unlock()
+			m.emit(ExitEvent{SessionID: it.id, ExitCode: 0})
+			continue
+		}
+
+		lines, snap, err := m.capture(it.name, 300)
+		if err != nil {
+			m.emit(ManagerErrorEvent{Err: "tmux capture: " + err.Error()})
+			continue
+		}
+		if snap == it.last {
+			continue
+		}
+		m.mu.Lock()
+		if s, ok := m.sessions[it.id]; ok {
+			s.lastSnapshot = snap
+		}
+		m.mu.Unlock()
+		m.emit(CaptureEvent{SessionID: it.id, Lines: lines})
+	}
+}
+
+func (m *Manager) capture(tmuxSession string, historyLines int) ([]string, string, error) {
+	start := fmt.Sprintf("-%d", historyLines)
+	out, err := runTmux("capture-pane", "-p", "-J", "-t", tmuxSession, "-S", start)
+	if err != nil {
+		return nil, "", err
+	}
+	snap := strings.ReplaceAll(out, "\r\n", "\n")
+	snap = strings.ReplaceAll(snap, "\r", "\n")
+	snap = strings.TrimRight(snap, "\n")
+	if snap == "" {
+		return nil, "", nil
+	}
+	return strings.Split(snap, "\n"), snap, nil
+}
+
+func (m *Manager) getSession(sessionID string) (*runtimeSession, error) {
+	m.mu.Lock()
+	rs, ok := m.sessions[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+	return rs, nil
 }
 
 func (m *Manager) emit(evt Event) {
 	select {
 	case m.events <- evt:
 	default:
-		// avoid blocking UI; drop and report once
 		select {
 		case m.events <- ManagerErrorEvent{Err: "terminal event queue full"}:
 		default:
 		}
 	}
+}
+
+func tmuxHasSession(name string) (bool, error) {
+	_, err := runTmux("has-session", "-t", name)
+	if err == nil {
+		return true, nil
+	}
+	// tmux uses exit code 1 for missing session; stderr usually includes this text.
+	raw := strings.ToLower(err.Error())
+	if strings.Contains(raw, "can't find session") || strings.Contains(raw, "exit status 1") {
+		return false, nil
+	}
+	return false, err
+}
+
+func runTmux(args ...string) (string, error) {
+	cmd := exec.Command("tmux", args...)
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		if text == "" {
+			return "", err
+		}
+		return "", fmt.Errorf("%w | %s", err, text)
+	}
+	return text, nil
+}
+
+func sendBytesToTmux(tmuxSession string, data []byte) error {
+	for len(data) > 0 {
+		// Arrow keys
+		if len(data) >= 3 && data[0] == 0x1b && data[1] == '[' {
+			switch data[2] {
+			case 'A':
+				if _, err := runTmux("send-keys", "-t", tmuxSession, "Up"); err != nil {
+					return err
+				}
+				data = data[3:]
+				continue
+			case 'B':
+				if _, err := runTmux("send-keys", "-t", tmuxSession, "Down"); err != nil {
+					return err
+				}
+				data = data[3:]
+				continue
+			case 'C':
+				if _, err := runTmux("send-keys", "-t", tmuxSession, "Right"); err != nil {
+					return err
+				}
+				data = data[3:]
+				continue
+			case 'D':
+				if _, err := runTmux("send-keys", "-t", tmuxSession, "Left"); err != nil {
+					return err
+				}
+				data = data[3:]
+				continue
+			}
+		}
+
+		b := data[0]
+		switch {
+		case b == '\r' || b == '\n':
+			if _, err := runTmux("send-keys", "-t", tmuxSession, "Enter"); err != nil {
+				return err
+			}
+			data = data[1:]
+		case b == '\t':
+			if _, err := runTmux("send-keys", "-t", tmuxSession, "Tab"); err != nil {
+				return err
+			}
+			data = data[1:]
+		case b == 0x7f:
+			if _, err := runTmux("send-keys", "-t", tmuxSession, "BSpace"); err != nil {
+				return err
+			}
+			data = data[1:]
+		case b >= 1 && b <= 26:
+			ctrl := "C-" + string('a'+(b-1))
+			if _, err := runTmux("send-keys", "-t", tmuxSession, ctrl); err != nil {
+				return err
+			}
+			data = data[1:]
+		default:
+			// Accumulate literal runes until next control code.
+			i := 0
+			for i < len(data) {
+				c := data[i]
+				if c == 0x1b || c == '\r' || c == '\n' || c == '\t' || c == 0x7f || (c >= 1 && c <= 26) {
+					break
+				}
+				i++
+			}
+			if i == 0 {
+				data = data[1:]
+				continue
+			}
+			lit := string(data[:i])
+			if _, err := runTmux("send-keys", "-t", tmuxSession, "-l", lit); err != nil {
+				return err
+			}
+			data = data[i:]
+		}
+	}
+	return nil
+}
+
+func sanitizeName(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return "term"
+	}
+	repl := strings.NewReplacer(" ", "_", "/", "_", ":", "_", ".", "_")
+	return repl.Replace(s)
 }

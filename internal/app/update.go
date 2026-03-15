@@ -295,6 +295,15 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case "enter":
+		if m.Focus == ui.PaneTerminal {
+			active := m.TerminalPane.ActiveSession()
+			if active != nil {
+				m.TerminalPane.SetStatus("attaching... (detach with Ctrl+b then d)", false)
+				return m, terminal.AttachCmd(m.TerminalMgr, active.ID)
+			}
+		}
+		return m, nil
 	case "J":
 		scrollFocused(&m, 1)
 		return m, nil

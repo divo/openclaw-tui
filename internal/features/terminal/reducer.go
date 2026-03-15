@@ -16,6 +16,12 @@ func Reduce(state State, incoming any) State {
 		} else {
 			s.SetStatus("starting "+m.Spec.Name+"...", false)
 		}
+	case AttachResultMsg:
+		if m.Err != nil {
+			s.SetStatus(fmt.Sprintf("attach failed [%s]: %v", m.SessionID, m.Err), true)
+		} else {
+			s.SetStatus(fmt.Sprintf("detached [%s]", m.SessionID), false)
+		}
 	}
 	return s
 }
@@ -34,12 +40,11 @@ func reduceEvent(state State, evt Event) State {
 				}
 			}
 		}
-	case OutputEvent:
-		s.AppendOutput(e.SessionID, e.Chunk)
+	case CaptureEvent:
+		s.SetSnapshot(e.SessionID, e.Lines)
 	case ExitEvent:
 		for i := range s.Sessions {
 			if s.Sessions[i].ID == e.SessionID {
-				s.Sessions[i].Buffer.Flush() // commit any partial line
 				s.Sessions[i].Status = SessionStatusExited
 				s.Sessions[i].ExitCode = e.ExitCode
 				s.Sessions[i].LastError = e.Err

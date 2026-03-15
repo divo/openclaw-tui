@@ -15,6 +15,10 @@ func View(state State, height int) string {
 			"    shell",
 			"    claude",
 			"    ssh <host>",
+			"",
+			"When a session exists:",
+			"  MOVE mode + Enter => attach (best for nvim/full-screen apps)",
+			"  Detach from tmux with Ctrl+b then d",
 		}
 		if state.CommandMode {
 			body = append(body, "", "> "+state.PendingCommand)
@@ -35,7 +39,7 @@ func View(state State, height int) string {
 	lines := []string{strings.Join(header, "  ")}
 	lines = append(lines, strings.Repeat("─", 20))
 	if active != nil {
-		content := active.Buffer.Lines()
+		content := active.Snapshot
 		available := max(1, height-3)
 		start := 0
 		if len(content) > available {

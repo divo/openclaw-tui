@@ -26,7 +26,7 @@ type Session struct {
 	UpdatedAt  time.Time
 	ExitCode   int
 	LastError  string
-	Buffer     RingBuffer
+	Snapshot   []string // latest tmux capture-pane snapshot
 	Scrollback int
 }
 
@@ -83,10 +83,7 @@ func (s *State) Upsert(meta SessionMeta) {
 		Status:    meta.Status,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		Buffer: RingBuffer{
-			MaxLines: s.MaxBufferLines,
-			MaxBytes: s.MaxBufferBytes,
-		},
+		Snapshot:  nil,
 	})
 	if s.Active == -1 {
 		s.Active = 0
@@ -131,11 +128,17 @@ func (s *State) PrevSession() {
 	}
 }
 
-func (s *State) AppendOutput(sessionID string, chunk string) {
+func (s *State) SetSnapshot(sessionID string, lines []string) {
 	for i := range s.Sessions {
 		if s.Sessions[i].ID == sessionID {
-			s.Sessions[i].Buffer.Append(chunk)
+			out := make([]string, len(lines))
+			copy(out, lines)
+			s.Sessions[i].Snapshot = out
 			s.Sessions[i].UpdatedAt = time.Now()
+			maxScroll := maxInt(0, len(out)-1)
+			if s.Sessions[i].Scrollback > maxScroll {
+				s.Sessions[i].Scrollback = maxScroll
+			}
 			return
 		}
 	}
@@ -169,4 +172,11 @@ func ParseCreateCommand(input string) (SessionSpec, error) {
 	default:
 		return SessionSpec{}, fmt.Errorf("unknown command %q", parts[0])
 	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

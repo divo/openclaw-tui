@@ -15,6 +15,11 @@ type StartSessionResultMsg struct {
 	Err  error
 }
 
+type AttachResultMsg struct {
+	SessionID string
+	Err       error
+}
+
 func WaitEventCmd(mgr *Manager) tea.Cmd {
 	return func() tea.Msg {
 		evt, ok := <-mgr.Events()
@@ -54,6 +59,21 @@ func KillSessionCmd(mgr *Manager, sessionID string) tea.Cmd {
 		}
 		return nil
 	}
+}
+
+func AttachCmd(mgr *Manager, sessionID string) tea.Cmd {
+	if sessionID == "" {
+		return nil
+	}
+	cmd, err := mgr.AttachCommand(sessionID)
+	if err != nil {
+		return func() tea.Msg {
+			return AttachResultMsg{SessionID: sessionID, Err: err}
+		}
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return AttachResultMsg{SessionID: sessionID, Err: err}
+	})
 }
 
 func ShutdownCmd(mgr *Manager) tea.Cmd {
