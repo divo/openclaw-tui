@@ -1,6 +1,10 @@
 package terminal
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"fmt"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 type EventMsg struct {
 	Event Event
@@ -71,15 +75,33 @@ func AttachCmd(mgr *Manager, sessionID string) tea.Cmd {
 	if sessionID == "" {
 		return nil
 	}
-	cmd, err := mgr.AttachCommand(sessionID)
+	cmd, err := mgr.PrepareAttach(sessionID)
 	if err != nil {
 		return func() tea.Msg {
 			return AttachResultMsg{SessionID: sessionID, Err: err}
 		}
 	}
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	proc := tea.ExecProcess(cmd, func(err error) tea.Msg {
+		if finishErr := mgr.FinishAttach(sessionID); finishErr != nil {
+			if err != nil {
+				err = errJoin(err, finishErr)
+			} else {
+				err = finishErr
+			}
+		}
 		return AttachResultMsg{SessionID: sessionID, Err: err}
 	})
+	return tea.Sequence(tea.ExitAltScreen, proc, tea.EnterAltScreen)
+}
+
+func errJoin(a, b error) error {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return fmt.Errorf("%v; %w", a, b)
 }
 
 func CaptureFullCmd(mgr *Manager, sessionID string) tea.Cmd {

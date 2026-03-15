@@ -2,14 +2,10 @@ package terminal
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/x/term"
@@ -74,8 +70,9 @@ func (ManagerErrorEvent) isTerminalEvent() {}
 type runtimeSession struct {
 	id           string
 	spec         SessionSpec
-	tmuxSession  string
+	tmuxSession  *tmuxSession
 	lastSnapshot string
+	attaching    bool
 }
 
 type Manager struct {
@@ -117,29 +114,22 @@ func (m *Manager) Start(spec SessionSpec) error {
 
 	m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusStarting}})
 
-	args := []string{"new-session", "-d", "-s", tmuxName, spec.Cmd}
-	args = append(args, spec.Args...)
-	cmd := exec.Command("tmux", args...)
-	cmd.Env = append(os.Environ(), spec.Env...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
-		}
+	t := newTmuxSession(tmuxName)
+	if err := t.Start(spec); err != nil {
+		msg := err.Error()
 		m.emit(ManagerErrorEvent{Err: fmt.Sprintf("start %s: %s", spec.Name, msg)})
 		m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusError, Err: msg}})
 		return err
 	}
 
-	rs := &runtimeSession{id: id, spec: spec, tmuxSession: tmuxName}
+	rs := &runtimeSession{id: id, spec: spec, tmuxSession: t}
 	m.mu.Lock()
 	m.sessions[id] = rs
 	m.mu.Unlock()
 
 	m.emit(SessionEvent{Meta: SessionMeta{ID: id, Name: spec.Name, Type: spec.Type, Status: SessionStatusRunning}})
 
-	if lines, snap, err := m.capture(tmuxName, 300); err == nil {
+	if lines, snap, err := t.Capture(300); err == nil {
 		m.mu.Lock()
 		if s, ok := m.sessions[id]; ok {
 			s.lastSnapshot = snap
@@ -150,12 +140,14 @@ func (m *Manager) Start(spec SessionSpec) error {
 	return nil
 }
 
+// Write is retained for compatibility but the embedded pane is intentionally
+// view-only. Real interaction is via Attach.
 func (m *Manager) Write(sessionID string, data []byte) error {
 	rs, err := m.getSession(sessionID)
 	if err != nil {
 		return err
 	}
-	return sendBytesToTmux(rs.tmuxSession, data)
+	return sendBytesToTmux(rs.tmuxSession.name, data)
 }
 
 func (m *Manager) Kill(sessionID string) error {
@@ -163,7 +155,7 @@ func (m *Manager) Kill(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runTmux("kill-session", "-t", rs.tmuxSession); err != nil {
+	if err := rs.tmuxSession.Close(); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -173,130 +165,35 @@ func (m *Manager) Kill(sessionID string) error {
 	return nil
 }
 
-// Attach enters full-screen attach mode for a tmux session and returns a done
-// channel that closes when detached/finished. Detach chord: Ctrl+Q.
-func (m *Manager) Attach(sessionID string) (<-chan struct{}, error) {
+// PrepareAttach transitions a session from detached-capture mode to attached
+// interactive mode by releasing the detached PTY first.
+func (m *Manager) PrepareAttach(sessionID string) (*exec.Cmd, error) {
 	rs, err := m.getSession(sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command("tmux", "attach-session", "-t", rs.tmuxSession)
-	cmd.Env = os.Environ()
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
+	m.mu.Lock()
+	if rs.attaching {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("session %s already attaching", sessionID)
+	}
+	rs.attaching = true
+	m.mu.Unlock()
+
+	if err := rs.tmuxSession.ReleaseDetached(); err != nil {
+		m.mu.Lock()
+		rs.attaching = false
+		m.mu.Unlock()
 		return nil, err
 	}
 
-	done := make(chan struct{})
-	go func(tmuxSession string, c *exec.Cmd, f *os.File) {
-		defer close(done)
-		defer func() { _ = f.Close() }()
-
-		// Raw mode removes cooked-input lag while attached.
-		var oldState *term.State
-		if term.IsTerminal(os.Stdin.Fd()) {
-			if st, e := term.MakeRaw(os.Stdin.Fd()); e == nil {
-				oldState = st
-			}
-		}
-		defer func() {
-			if oldState != nil {
-				_ = term.Restore(os.Stdin.Fd(), oldState)
-			}
-		}()
-
-		// Initial size sync + SIGWINCH resize forwarding to avoid clipped views.
-		_ = pty.InheritSize(os.Stdin, f)
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGWINCH)
-		defer signal.Stop(sigCh)
-		resizeDone := make(chan struct{})
-		stopResize := make(chan struct{})
-		go func() {
-			defer close(resizeDone)
-			for {
-				select {
-				case <-sigCh:
-					_ = pty.InheritSize(os.Stdin, f)
-				case <-stopResize:
-					return
-				}
-			}
-		}()
-
-		// tmux -> stdout
-		copyDone := make(chan struct{}, 1)
-		go func() {
-			_, _ = io.Copy(os.Stdout, f)
-			copyDone <- struct{}{}
-		}()
-
-		// stdin -> tmux with Ctrl+Q detach
-		inDone := make(chan struct{}, 1)
-		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := os.Stdin.Read(buf)
-				if n > 0 {
-					for i := 0; i < n; i++ {
-						if buf[i] == 0x11 { // Ctrl+Q
-							_, _ = runTmux("detach-client", "-s", tmuxSession)
-							inDone <- struct{}{}
-							return
-						}
-					}
-					_, _ = f.Write(buf[:n])
-				}
-				if err != nil {
-					inDone <- struct{}{}
-					return
-				}
-			}
-		}()
-
-		waitDone := make(chan struct{}, 1)
-		go func() {
-			_ = c.Wait()
-			waitDone <- struct{}{}
-		}()
-
-		select {
-		case <-waitDone:
-		case <-inDone:
-			// give tmux a moment to settle detach path
-			select {
-			case <-waitDone:
-			case <-time.After(300 * time.Millisecond):
-			}
-		}
-
-		select {
-		case <-copyDone:
-		case <-time.After(300 * time.Millisecond):
-		}
-
-		close(stopResize)
-		<-resizeDone
-	}(rs.tmuxSession, cmd, ptmx)
-
-	return done, nil
-}
-
-func (m *Manager) AttachCommand(sessionID string) (*exec.Cmd, error) {
-	rs, err := m.getSession(sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Ensure detached window has current terminal size before attach.
 	if w, h, e := term.GetSize(os.Stdout.Fd()); e == nil {
-		_, _ = runTmux("resize-window", "-t", rs.tmuxSession, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h))
+		_ = rs.tmuxSession.SetDetachedSize(w, h)
 	}
-	// Mirror Claude-Squad detach chord for attach mode.
 	_, _ = runTmux("bind-key", "-n", "C-q", "detach-client")
 
-	cmd := exec.Command("tmux", "attach-session", "-t", rs.tmuxSession)
+	cmd := exec.Command("tmux", "attach-session", "-t", "="+rs.tmuxSession.name)
 	cmd.Env = os.Environ()
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -304,43 +201,46 @@ func (m *Manager) AttachCommand(sessionID string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
+// FinishAttach restores detached capture mode after interactive attach exits.
+func (m *Manager) FinishAttach(sessionID string) error {
+	rs, err := m.getSession(sessionID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		m.mu.Lock()
+		rs.attaching = false
+		m.mu.Unlock()
+	}()
+	return rs.tmuxSession.Restore()
+}
+
 func (m *Manager) CaptureFull(sessionID string) ([]string, error) {
 	rs, err := m.getSession(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	out, err := runTmux("capture-pane", "-p", "-e", "-J", "-t", rs.tmuxSession, "-S", "-", "-E", "-")
+	lines, _, err := rs.tmuxSession.CaptureRange("-", "-")
 	if err != nil {
 		return nil, err
 	}
-	out = strings.ReplaceAll(out, "\r\n", "\n")
-	out = strings.ReplaceAll(out, "\r", "\n")
-	out = strings.TrimRight(out, "\n")
-	if out == "" {
-		return nil, nil
-	}
-	return strings.Split(out, "\n"), nil
+	return lines, nil
 }
 
-// ResizeAll applies a detached pane size hint to all tmux sessions.
-// This keeps capture-pane output from being clipped to stale/default sizes.
 func (m *Manager) ResizeAll(width, height int) {
 	if width <= 0 || height <= 0 {
 		return
 	}
 	m.mu.Lock()
-	names := make([]string, 0, len(m.sessions))
+	sessions := make([]*runtimeSession, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		names = append(names, s.tmuxSession)
+		sessions = append(sessions, s)
 	}
 	m.mu.Unlock()
 
-	w := strconv.Itoa(width)
-	h := strconv.Itoa(height)
-	for _, name := range names {
-		_, err := runTmux("resize-window", "-t", name, "-x", w, "-y", h)
-		if err != nil {
-			m.emit(ManagerErrorEvent{Err: fmt.Sprintf("resize %s: %v", name, err)})
+	for _, s := range sessions {
+		if err := s.tmuxSession.SetDetachedSize(width, height); err != nil {
+			m.emit(ManagerErrorEvent{Err: fmt.Sprintf("resize %s: %v", s.tmuxSession.name, err)})
 		}
 	}
 }
@@ -348,7 +248,6 @@ func (m *Manager) ResizeAll(width, height int) {
 func (m *Manager) Shutdown() {
 	select {
 	case <-m.stopCh:
-		// already closed
 	default:
 		close(m.stopCh)
 	}
@@ -381,18 +280,18 @@ func (m *Manager) pollLoop() {
 func (m *Manager) pollOnce() {
 	type item struct {
 		id   string
-		name string
+		sess *tmuxSession
 		last string
 	}
 	m.mu.Lock()
 	items := make([]item, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		items = append(items, item{id: s.id, name: s.tmuxSession, last: s.lastSnapshot})
+		items = append(items, item{id: s.id, sess: s.tmuxSession, last: s.lastSnapshot})
 	}
 	m.mu.Unlock()
 
 	for _, it := range items {
-		has, err := tmuxHasSession(it.name)
+		has, err := it.sess.Exists()
 		if err != nil {
 			m.emit(ManagerErrorEvent{Err: "tmux has-session: " + err.Error()})
 			continue
@@ -405,7 +304,7 @@ func (m *Manager) pollOnce() {
 			continue
 		}
 
-		lines, snap, err := m.capture(it.name, 300)
+		lines, snap, err := it.sess.Capture(300)
 		if err != nil {
 			m.emit(ManagerErrorEvent{Err: "tmux capture: " + err.Error()})
 			continue
@@ -420,21 +319,6 @@ func (m *Manager) pollOnce() {
 		m.mu.Unlock()
 		m.emit(CaptureEvent{SessionID: it.id, Lines: lines})
 	}
-}
-
-func (m *Manager) capture(tmuxSession string, historyLines int) ([]string, string, error) {
-	start := fmt.Sprintf("-%d", historyLines)
-	out, err := runTmux("capture-pane", "-p", "-e", "-J", "-t", tmuxSession, "-S", start)
-	if err != nil {
-		return nil, "", err
-	}
-	snap := strings.ReplaceAll(out, "\r\n", "\n")
-	snap = strings.ReplaceAll(snap, "\r", "\n")
-	snap = strings.TrimRight(snap, "\n")
-	if snap == "" {
-		return nil, "", nil
-	}
-	return strings.Split(snap, "\n"), snap, nil
 }
 
 func (m *Manager) getSession(sessionID string) (*runtimeSession, error) {
@@ -458,17 +342,111 @@ func (m *Manager) emit(evt Event) {
 	}
 }
 
-func tmuxHasSession(name string) (bool, error) {
-	_, err := runTmux("has-session", "-t", name)
+type tmuxSession struct {
+	name string
+	ptmx *os.File
+}
+
+func newTmuxSession(name string) *tmuxSession {
+	return &tmuxSession{name: name}
+}
+
+func (t *tmuxSession) Start(spec SessionSpec) error {
+	args := []string{"new-session", "-d", "-s", t.name, spec.Cmd}
+	args = append(args, spec.Args...)
+	cmd := exec.Command("tmux", args...)
+	cmd.Env = append(os.Environ(), spec.Env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s", msg)
+	}
+
+	_, _ = runTmux("set-option", "-t", t.name, "history-limit", "10000")
+	_, _ = runTmux("set-option", "-t", t.name, "mouse", "on")
+
+	return t.Restore()
+}
+
+func (t *tmuxSession) Restore() error {
+	if t.ptmx != nil {
+		return nil
+	}
+	ptmx, err := pty.Start(exec.Command("tmux", "attach-session", "-t", "="+t.name))
+	if err != nil {
+		return fmt.Errorf("open detached tmux pty: %w", err)
+	}
+	t.ptmx = ptmx
+	return nil
+}
+
+func (t *tmuxSession) ReleaseDetached() error {
+	if t.ptmx == nil {
+		return nil
+	}
+	err := t.ptmx.Close()
+	t.ptmx = nil
+	if err != nil {
+		return fmt.Errorf("close detached tmux pty: %w", err)
+	}
+	return nil
+}
+
+func (t *tmuxSession) Close() error {
+	_ = t.ReleaseDetached()
+	_, err := runTmux("kill-session", "-t", "="+t.name)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *tmuxSession) Exists() (bool, error) {
+	_, err := runTmux("has-session", "-t", "="+t.name)
 	if err == nil {
 		return true, nil
 	}
-	// tmux uses exit code 1 for missing session; stderr usually includes this text.
 	raw := strings.ToLower(err.Error())
 	if strings.Contains(raw, "can't find session") || strings.Contains(raw, "exit status 1") {
 		return false, nil
 	}
 	return false, err
+}
+
+func (t *tmuxSession) Capture(historyLines int) ([]string, string, error) {
+	start := fmt.Sprintf("-%d", historyLines)
+	return t.CaptureRange(start, "")
+}
+
+func (t *tmuxSession) CaptureRange(start, end string) ([]string, string, error) {
+	args := []string{"capture-pane", "-p", "-e", "-J", "-t", "=" + t.name}
+	if start != "" {
+		args = append(args, "-S", start)
+	}
+	if end != "" {
+		args = append(args, "-E", end)
+	}
+	out, err := runTmux(args...)
+	if err != nil {
+		return nil, "", err
+	}
+	snap := strings.ReplaceAll(out, "\r\n", "\n")
+	snap = strings.ReplaceAll(snap, "\r", "\n")
+	snap = strings.TrimRight(snap, "\n")
+	if snap == "" {
+		return nil, "", nil
+	}
+	return strings.Split(snap, "\n"), snap, nil
+}
+
+func (t *tmuxSession) SetDetachedSize(width, height int) error {
+	if width <= 0 || height <= 0 || t.ptmx == nil {
+		return nil
+	}
+	return pty.Setsize(t.ptmx, &pty.Winsize{Rows: uint16(height), Cols: uint16(width)})
 }
 
 func runTmux(args ...string) (string, error) {
@@ -486,29 +464,28 @@ func runTmux(args ...string) (string, error) {
 
 func sendBytesToTmux(tmuxSession string, data []byte) error {
 	for len(data) > 0 {
-		// Arrow keys
 		if len(data) >= 3 && data[0] == 0x1b && data[1] == '[' {
 			switch data[2] {
 			case 'A':
-				if _, err := runTmux("send-keys", "-t", tmuxSession, "Up"); err != nil {
+				if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Up"); err != nil {
 					return err
 				}
 				data = data[3:]
 				continue
 			case 'B':
-				if _, err := runTmux("send-keys", "-t", tmuxSession, "Down"); err != nil {
+				if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Down"); err != nil {
 					return err
 				}
 				data = data[3:]
 				continue
 			case 'C':
-				if _, err := runTmux("send-keys", "-t", tmuxSession, "Right"); err != nil {
+				if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Right"); err != nil {
 					return err
 				}
 				data = data[3:]
 				continue
 			case 'D':
-				if _, err := runTmux("send-keys", "-t", tmuxSession, "Left"); err != nil {
+				if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Left"); err != nil {
 					return err
 				}
 				data = data[3:]
@@ -519,28 +496,27 @@ func sendBytesToTmux(tmuxSession string, data []byte) error {
 		b := data[0]
 		switch {
 		case b == '\r' || b == '\n':
-			if _, err := runTmux("send-keys", "-t", tmuxSession, "Enter"); err != nil {
+			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Enter"); err != nil {
 				return err
 			}
 			data = data[1:]
 		case b == '\t':
-			if _, err := runTmux("send-keys", "-t", tmuxSession, "Tab"); err != nil {
+			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "Tab"); err != nil {
 				return err
 			}
 			data = data[1:]
 		case b == 0x7f:
-			if _, err := runTmux("send-keys", "-t", tmuxSession, "BSpace"); err != nil {
+			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "BSpace"); err != nil {
 				return err
 			}
 			data = data[1:]
 		case b >= 1 && b <= 26:
 			ctrl := "C-" + string('a'+(b-1))
-			if _, err := runTmux("send-keys", "-t", tmuxSession, ctrl); err != nil {
+			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, ctrl); err != nil {
 				return err
 			}
 			data = data[1:]
 		default:
-			// Accumulate literal runes until next control code.
 			i := 0
 			for i < len(data) {
 				c := data[i]
@@ -554,7 +530,7 @@ func sendBytesToTmux(tmuxSession string, data []byte) error {
 				continue
 			}
 			lit := string(data[:i])
-			if _, err := runTmux("send-keys", "-t", tmuxSession, "-l", lit); err != nil {
+			if _, err := runTmux("send-keys", "-t", "="+tmuxSession, "-l", lit); err != nil {
 				return err
 			}
 			data = data[i:]

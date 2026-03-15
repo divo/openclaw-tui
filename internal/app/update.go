@@ -286,8 +286,12 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 	case "r":
 		m.Status = "Refreshing..."
 		return m, tea.Batch(RefreshCmd(m.Transport), DiscoverSessionCmd(m.Transport))
-	case "ctrl+n":
-		if m.Focus == ui.PaneTerminal {
+	case "S", "ctrl+n":
+		if k.String() == "S" || m.Focus == ui.PaneTerminal {
+			m.Focus = ui.PaneTerminal
+			m.Mode = ui.ModeMove
+			m.TerminalPane.CommandMode = false
+			m.TerminalPane.PendingCommand = ""
 			m.TerminalPane.SetStatus("starting shell tmux session...", false)
 			return m, terminal.StartSessionCmd(m.TerminalMgr, terminal.ShellSpec())
 		}

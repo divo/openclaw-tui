@@ -10,9 +10,9 @@ func View(state State, height int) string {
 		body := []string{
 			"No terminal sessions.",
 			"",
-			"Create tmux sessions from Terminal pane in EDIT mode:",
-			"  Ctrl+n starts a shell",
-			"  Ctrl+t opens custom command mode (shell|claude|ssh <host>)",
+			"Create tmux sessions:",
+			"  MOVE: S (or Ctrl+n on Terminal) starts a shell",
+			"  EDIT on Terminal: Ctrl+t opens custom command mode (shell|claude|ssh <host>)",
 			"",
 			"When a session exists:",
 			"  Embedded pane is view-only (capture snapshot)",
