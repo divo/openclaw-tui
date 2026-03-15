@@ -256,8 +256,9 @@ func reduceKey(m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 				return m, nil
 			}
 
-			switch k.String() {
-			case "ctrl+]":
+			// In terminal input mode, forward everything to the shell except Ctrl+]
+			// which returns to MOVE mode.
+			if k.String() == "ctrl+]" {
 				m.Mode = ui.ModeMove
 				m.TerminalPane.SetStatus("terminal MOVE mode", false)
 				return m, nil
