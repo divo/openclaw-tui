@@ -40,17 +40,3 @@ func View(items []msg.TaskItem, offset, height int) string {
 
 	return strings.Join(out, "\n")
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

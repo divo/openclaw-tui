@@ -98,17 +98,3 @@ func PaneBox(title string, focused bool, width, height int, content string) stri
 	}
 	return st.Render(title + "\n" + content)
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

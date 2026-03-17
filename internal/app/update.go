@@ -457,6 +457,44 @@ func forwardTerminalKey(sessionID string, k tea.KeyMsg, mgr *terminal.Manager) t
 		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[D"))
 	case "right":
 		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[C"))
+	case "home":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[H"))
+	case "end":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[F"))
+	case "insert":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[2~"))
+	case "delete":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[3~"))
+	case "pgup":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[5~"))
+	case "pgdown":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[6~"))
+	case "shift+tab":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[Z"))
+	case "f1":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1bOP"))
+	case "f2":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1bOQ"))
+	case "f3":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1bOR"))
+	case "f4":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1bOS"))
+	case "f5":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[15~"))
+	case "f6":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[17~"))
+	case "f7":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[18~"))
+	case "f8":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[19~"))
+	case "f9":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[20~"))
+	case "f10":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[21~"))
+	case "f11":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[23~"))
+	case "f12":
+		return terminal.WriteActiveCmd(mgr, sessionID, []byte("\x1b[24~"))
 	}
 	if b, ok := ctrlKeyByte(k.String()); ok {
 		return terminal.WriteActiveCmd(mgr, sessionID, []byte{b})
@@ -484,11 +522,4 @@ func trimLastRune(s string) string {
 	}
 	_, size := utf8.DecodeLastRuneInString(s)
 	return s[:len(s)-size]
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

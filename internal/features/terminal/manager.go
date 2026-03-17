@@ -2,8 +2,10 @@ package terminal
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -25,10 +27,15 @@ func ShellSpec() SessionSpec {
 	if shell == "" {
 		shell = "bash"
 	}
-	// Force interactive mode so prompts render in the detached capture pane.
-	// Without -i some shells behave non-interactively (no prompt), which looks
-	// like a dead "(no output yet)" pane.
-	return SessionSpec{Name: "shell", Type: SessionTypeShell, Cmd: shell, Args: []string{"-i"}}
+	// Bash/sh need -i to force interactive mode in a detached PTY.
+	// Zsh and fish auto-detect PTY interactivity; -i can cause .zshrc
+	// issues (compinit hangs, powerline probes, etc.).
+	var args []string
+	base := filepath.Base(shell)
+	if base == "bash" || base == "sh" {
+		args = []string{"-i"}
+	}
+	return SessionSpec{Name: "shell", Type: SessionTypeShell, Cmd: shell, Args: args}
 }
 
 func ClaudeSpec() SessionSpec {
@@ -71,11 +78,11 @@ func (ExitEvent) isTerminalEvent()         {}
 func (ManagerErrorEvent) isTerminalEvent() {}
 
 type runtimeSession struct {
-	id           string
-	spec         SessionSpec
-	tmuxSession  *tmuxSession
-	lastSnapshot string
-	attaching    bool
+	id          string
+	spec        SessionSpec
+	tmuxSession *tmuxSession
+	lastHash    uint64
+	attaching   bool
 }
 
 type Manager struct {
@@ -148,7 +155,7 @@ func (m *Manager) Start(spec SessionSpec) error {
 	if lines, snap, err := t.Capture(300); err == nil {
 		m.mu.Lock()
 		if s, ok := m.sessions[id]; ok {
-			s.lastSnapshot = snap
+			s.lastHash = hashSnap(snap)
 		}
 		m.mu.Unlock()
 		m.emit(CaptureEvent{SessionID: id, Lines: lines})
@@ -228,6 +235,8 @@ func (m *Manager) FinishAttach(sessionID string) error {
 		rs.attaching = false
 		m.mu.Unlock()
 	}()
+	// Remove the temporary global C-q detach binding installed by PrepareAttach.
+	_, _ = runTmux("unbind-key", "-n", "C-q")
 	if err := rs.tmuxSession.Restore(); err != nil {
 		return err
 	}
@@ -281,6 +290,8 @@ func (m *Manager) Shutdown() {
 	default:
 		close(m.stopCh)
 	}
+	// Safety net: remove any lingering global C-q binding.
+	_, _ = runTmux("unbind-key", "-n", "C-q")
 
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.sessions))
@@ -309,14 +320,14 @@ func (m *Manager) pollLoop() {
 
 func (m *Manager) pollOnce() {
 	type item struct {
-		id   string
-		sess *tmuxSession
-		last string
+		id       string
+		sess     *tmuxSession
+		lastHash uint64
 	}
 	m.mu.Lock()
 	items := make([]item, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		items = append(items, item{id: s.id, sess: s.tmuxSession, last: s.lastSnapshot})
+		items = append(items, item{id: s.id, sess: s.tmuxSession, lastHash: s.lastHash})
 	}
 	m.mu.Unlock()
 
@@ -339,12 +350,13 @@ func (m *Manager) pollOnce() {
 			m.emit(ManagerErrorEvent{Err: "tmux capture: " + err.Error()})
 			continue
 		}
-		if snap == it.last {
+		h := hashSnap(snap)
+		if h == it.lastHash {
 			continue
 		}
 		m.mu.Lock()
 		if s, ok := m.sessions[it.id]; ok {
-			s.lastSnapshot = snap
+			s.lastHash = h
 		}
 		m.mu.Unlock()
 		m.emit(CaptureEvent{SessionID: it.id, Lines: lines})
@@ -403,7 +415,13 @@ func (t *tmuxSession) Start(spec SessionSpec) error {
 
 func (t *tmuxSession) Restore() error {
 	if t.ptmx != nil {
-		return nil
+		// Verify the existing PTY is still valid (tmux server may have crashed).
+		if _, err := t.ptmx.Stat(); err != nil {
+			_ = t.ptmx.Close()
+			t.ptmx = nil
+		} else {
+			return nil
+		}
 	}
 	ptmx, err := pty.Start(exec.Command("tmux", "attach-session", "-t", "="+t.name))
 	if err != nil {
@@ -500,90 +518,14 @@ func runTmux(args ...string) (string, error) {
 	return text, nil
 }
 
-func sendBytesToTmux(tmuxSession string, data []byte) error {
-	target := paneTarget(tmuxSession)
-	for len(data) > 0 {
-		if len(data) >= 3 && data[0] == 0x1b && data[1] == '[' {
-			switch data[2] {
-			case 'A':
-				if _, err := runTmux("send-keys", "-t", target, "Up"); err != nil {
-					return err
-				}
-				data = data[3:]
-				continue
-			case 'B':
-				if _, err := runTmux("send-keys", "-t", target, "Down"); err != nil {
-					return err
-				}
-				data = data[3:]
-				continue
-			case 'C':
-				if _, err := runTmux("send-keys", "-t", target, "Right"); err != nil {
-					return err
-				}
-				data = data[3:]
-				continue
-			case 'D':
-				if _, err := runTmux("send-keys", "-t", target, "Left"); err != nil {
-					return err
-				}
-				data = data[3:]
-				continue
-			}
-		}
-
-		b := data[0]
-		switch {
-		case b == '\r' || b == '\n':
-			if _, err := runTmux("send-keys", "-t", target, "Enter"); err != nil {
-				return err
-			}
-			data = data[1:]
-		case b == '\t':
-			if _, err := runTmux("send-keys", "-t", target, "Tab"); err != nil {
-				return err
-			}
-			data = data[1:]
-		case b == 0x7f:
-			if _, err := runTmux("send-keys", "-t", target, "BSpace"); err != nil {
-				return err
-			}
-			data = data[1:]
-		case b >= 1 && b <= 26:
-			ctrl := "C-" + string('a'+(b-1))
-			if _, err := runTmux("send-keys", "-t", target, ctrl); err != nil {
-				return err
-			}
-			data = data[1:]
-		default:
-			i := 0
-			for i < len(data) {
-				c := data[i]
-				if c == 0x1b || c == '\r' || c == '\n' || c == '\t' || c == 0x7f || (c >= 1 && c <= 26) {
-					break
-				}
-				i++
-			}
-			if i == 0 {
-				data = data[1:]
-				continue
-			}
-			lit := string(data[:i])
-			if _, err := runTmux("send-keys", "-t", target, "-l", lit); err != nil {
-				return err
-			}
-			data = data[i:]
-		}
-	}
-	return nil
-}
-
 func (t *tmuxSession) paneTarget() string {
-	return paneTarget(t.name)
+	return t.name + ":0.0"
 }
 
-func paneTarget(session string) string {
-	return session + ":0.0"
+func hashSnap(s string) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(s))
+	return h.Sum64()
 }
 
 func sanitizeName(s string) string {

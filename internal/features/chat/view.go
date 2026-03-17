@@ -88,17 +88,3 @@ func firstLine(s string) string {
 	}
 	return parts[0]
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

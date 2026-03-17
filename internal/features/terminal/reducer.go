@@ -2,7 +2,6 @@ package terminal
 
 import (
 	"fmt"
-	"time"
 )
 
 func Reduce(state State, incoming any) State {
@@ -54,14 +53,11 @@ func reduceEvent(state State, evt Event) State {
 	case ExitEvent:
 		for i := range s.Sessions {
 			if s.Sessions[i].ID == e.SessionID {
-				s.Sessions[i].Status = SessionStatusExited
-				s.Sessions[i].ExitCode = e.ExitCode
-				s.Sessions[i].LastError = e.Err
-				s.Sessions[i].UpdatedAt = time.Now()
 				s.SetStatus(fmt.Sprintf("%s [%s] exited (%d)", s.Sessions[i].Name, e.SessionID, e.ExitCode), e.ExitCode != 0)
 				break
 			}
 		}
+		s.Remove(e.SessionID)
 	case ManagerErrorEvent:
 		s.SetStatus(e.Err, true)
 	}

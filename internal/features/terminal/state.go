@@ -151,7 +151,7 @@ func (s *State) SetSnapshot(sessionID string, lines []string) {
 			copy(out, lines)
 			s.Sessions[i].Snapshot = out
 			s.Sessions[i].UpdatedAt = time.Now()
-			maxScroll := maxInt(0, len(out)-1)
+			maxScroll := max(0, len(out)-1)
 			if s.Sessions[i].Scrollback > maxScroll {
 				s.Sessions[i].Scrollback = maxScroll
 			}
@@ -216,9 +216,3 @@ func ParseCreateCommand(input string) (SessionSpec, error) {
 	}
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
