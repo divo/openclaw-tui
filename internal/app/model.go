@@ -104,31 +104,32 @@ func (m Model) View() string {
 	))
 
 	dims := ui.ComputeDimensions(m.Width, m.Height)
+
+	// Left column: status, sessions, tasks, chat, run status
 	statusPane := ui.PaneBox("Status", m.Focus == ui.PaneStatus, dims.LeftW, dims.StatusH, status.ViewList(m.StatusPane.ConnectionItems, m.StatusPane.Offset, dims.StatusH-2))
 	sessionsPane := ui.PaneBox("Sessions", m.Focus == ui.PaneSessions, dims.LeftW, dims.SessionsH, sessions.View(m.SessionsPane.Items, m.SessionsPane.Offset, dims.SessionsH-2))
-	leftTop := lipgloss.JoinVertical(lipgloss.Left, statusPane, sessionsPane)
-
-	tasksPane := ui.PaneBox("Tasks", m.Focus == ui.PaneTasks, dims.RightW, dims.TopH, tasks.View(m.TasksPane.Items, m.TasksPane.Offset, dims.TopH-2))
-	top := lipgloss.JoinHorizontal(lipgloss.Top, leftTop, tasksPane)
-
+	tasksPane := ui.PaneBox("Tasks", m.Focus == ui.PaneTasks, dims.LeftW, dims.TasksH, tasks.View(m.TasksPane.Items, m.TasksPane.Offset, dims.TasksH-2))
 	chatBody := chat.View(m.ChatPane, m.Mode, dims.ChatH-2)
-	chatPane := ui.PaneBox("Chat", m.Focus == ui.PaneChat, m.Width, dims.ChatH, chatBody)
-
-	terminalBody := terminal.View(m.TerminalPane, dims.TerminalH-2)
-	terminalPane := ui.PaneBox("Terminal", m.Focus == ui.PaneTerminal, m.Width, dims.TerminalH, terminalBody)
-
+	chatPane := ui.PaneBox("Chat", m.Focus == ui.PaneChat, dims.LeftW, dims.ChatH, chatBody)
 	runStatusLine := chat.RunStatusLine(m.ChatPane, m.Mode, m.Conn.String(), m.SessionKey, m.LastRefresh, m.Errors)
 	runStatusLine += " | " + terminal.StatusLine(m.TerminalPane)
-	runStatusPane := ui.PaneBox("Run Status", false, m.Width, dims.RunH, runStatusLine)
+	runStatusPane := ui.PaneBox("Run Status", false, dims.LeftW, dims.RunH, runStatusLine)
+	left := lipgloss.JoinVertical(lipgloss.Left, statusPane, sessionsPane, tasksPane, chatPane, runStatusPane)
 
-	footer := muted.Render("MOVE: hjkl focus, t terminal focus, Ctrl+n new shell, Ctrl+t custom cmd, n/p sessions, Enter/a in-pane input, A fullscreen attach, J/K scroll, Ctrl+d/u page, Esc exit scroll, r refresh, q quit | EDIT: i (Chat/Terminal), ↑↓ history, Enter send/newline (Chat), Terminal input forwards all keys, Ctrl+] back to MOVE | fullscreen detach: Ctrl+Q")
+	// Right column: terminal (full height)
+	terminalBody := terminal.View(m.TerminalPane, dims.TerminalH-2)
+	right := ui.PaneBox("Terminal", m.Focus == ui.PaneTerminal, dims.RightW, dims.TerminalH, terminalBody)
 
-	parts := []string{header, top, chatPane, terminalPane, runStatusPane}
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+
+	footer := muted.Render("hjkl focus | t terminal | i edit | Ctrl+n shell | A attach | Ctrl+Q detach | Ctrl+] back | J/K scroll | r refresh | q quit")
+
+	parts := []string{header, body}
 	if len(m.Errors) > 0 {
 		parts = append(parts, errorStyle.Render("Errors: "+strings.Join(m.Errors, " | ")))
 	}
 	parts = append(parts, footer)
-	return strings.Join(parts, "\n\n")
+	return strings.Join(parts, "\n")
 }
 
 func (m Model) Init() tea.Cmd {

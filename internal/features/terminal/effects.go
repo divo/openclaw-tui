@@ -1,9 +1,10 @@
 package terminal
 
 import (
-	"fmt"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 )
 
 type EventMsg struct {
@@ -71,37 +72,45 @@ func KillSessionCmd(mgr *Manager, sessionID string) tea.Cmd {
 	}
 }
 
+// AttachCmd bridges the existing detached PTY to stdin/stdout for fullscreen
+// interactive use. Uses the same single-client approach as Claude Squad:
+// no second tmux attach-session, just io.Copy + raw stdin forwarding.
 func AttachCmd(mgr *Manager, sessionID string) tea.Cmd {
 	if sessionID == "" {
 		return nil
 	}
-	cmd, err := mgr.PrepareAttach(sessionID)
-	if err != nil {
-		return func() tea.Msg {
-			return AttachResultMsg{SessionID: sessionID, Err: err}
-		}
-	}
-	proc := tea.ExecProcess(cmd, func(err error) tea.Msg {
-		if finishErr := mgr.FinishAttach(sessionID); finishErr != nil {
-			if err != nil {
-				err = errJoin(err, finishErr)
-			} else {
-				err = finishErr
-			}
-		}
-		return AttachResultMsg{SessionID: sessionID, Err: err}
-	})
-	return tea.Sequence(tea.ExitAltScreen, proc, tea.EnterAltScreen)
+	// We need to set up the attach (get the done channel) before suspending
+	// Bubble Tea, but the actual bridging runs in goroutines that need raw
+	// terminal access. So: set up raw mode + attach inside the ExecProcess
+	// callback won't work. Instead, use tea.ExitAltScreen, then a blocking
+	// cmd that waits on the attach channel, then tea.EnterAltScreen.
+	return tea.Sequence(
+		tea.ExitAltScreen,
+		attachBlockingCmd(mgr, sessionID),
+		tea.EnterAltScreen,
+	)
 }
 
-func errJoin(a, b error) error {
-	if a == nil {
-		return b
+func attachBlockingCmd(mgr *Manager, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		// Put terminal in raw mode so keystrokes go straight through.
+		oldState, err := term.MakeRaw(os.Stdin.Fd())
+		if err != nil {
+			return AttachResultMsg{SessionID: sessionID, Err: err}
+		}
+
+		doneCh, err := mgr.Attach(sessionID)
+		if err != nil {
+			_ = term.Restore(os.Stdin.Fd(), oldState)
+			return AttachResultMsg{SessionID: sessionID, Err: err}
+		}
+
+		// Block until detach (Ctrl+Q) or session end.
+		<-doneCh
+
+		_ = term.Restore(os.Stdin.Fd(), oldState)
+		return AttachResultMsg{SessionID: sessionID, Err: nil}
 	}
-	if b == nil {
-		return a
-	}
-	return fmt.Errorf("%v; %w", a, b)
 }
 
 func CaptureFullCmd(mgr *Manager, sessionID string) tea.Cmd {

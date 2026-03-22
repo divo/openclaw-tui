@@ -1,13 +1,17 @@
 package terminal
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/x/term"
@@ -188,9 +192,12 @@ func (m *Manager) Kill(sessionID string) error {
 	return nil
 }
 
-// PrepareAttach transitions a session from detached-capture mode to attached
-// interactive mode by releasing the detached PTY first.
-func (m *Manager) PrepareAttach(sessionID string) (*exec.Cmd, error) {
+// Attach bridges the existing detached PTY directly to stdin/stdout for
+// fullscreen interactive use (like Claude Squad). Only one tmux client
+// exists at any time, avoiding dual-client resize fights.
+// Returns a channel that closes when the user detaches (Ctrl+Q) or the
+// session ends. The caller should block on this channel.
+func (m *Manager) Attach(sessionID string) (<-chan struct{}, error) {
 	rs, err := m.getSession(sessionID)
 	if err != nil {
 		return nil, err
@@ -204,49 +211,131 @@ func (m *Manager) PrepareAttach(sessionID string) (*exec.Cmd, error) {
 	rs.attaching = true
 	m.mu.Unlock()
 
-	if err := rs.tmuxSession.ReleaseDetached(); err != nil {
+	ptmx := rs.tmuxSession.ptmx
+	if ptmx == nil {
 		m.mu.Lock()
 		rs.attaching = false
 		m.mu.Unlock()
-		return nil, err
+		return nil, fmt.Errorf("session %s has no PTY", sessionID)
 	}
 
-	if w, h, e := term.GetSize(os.Stdout.Fd()); e == nil {
-		_ = rs.tmuxSession.SetDetachedSize(w, h)
+	// Resize the PTY to the real terminal dimensions before bridging.
+	if w, h, e := term.GetSize(os.Stdout.Fd()); e == nil && w > 0 && h > 0 {
+		_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(h), Cols: uint16(w)})
 	}
-	_, _ = runTmux("bind-key", "-n", "C-q", "detach-client")
 
-	cmd := exec.Command("tmux", "attach-session", "-t", "="+rs.tmuxSession.name)
-	cmd.Env = os.Environ()
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd, nil
+	doneCh := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+
+	// Goroutine 1: PTY output → stdout
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(os.Stdout, ptmx)
+	}()
+
+	// Goroutine 2: stdin → PTY (with Ctrl+Q detection)
+	go func() {
+		// Nuke first 50ms of stdin (terminal control sequence noise on attach).
+		timeoutCh := make(chan struct{})
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			close(timeoutCh)
+		}()
+
+		buf := make([]byte, 32)
+		for {
+			nr, err := os.Stdin.Read(buf)
+			if err != nil {
+				break
+			}
+			// Discard initial control sequences.
+			select {
+			case <-timeoutCh:
+			default:
+				continue
+			}
+			// Ctrl+Q (ASCII 17) = detach.
+			if nr == 1 && buf[0] == 17 {
+				m.detachSession(rs, ctx, cancel, &wg, doneCh)
+				return
+			}
+			_, _ = ptmx.Write(buf[:nr])
+		}
+		// stdin EOF — detach.
+		m.detachSession(rs, ctx, cancel, &wg, doneCh)
+	}()
+
+	// Goroutine 3+4: SIGWINCH monitor with debouncing.
+	wg.Add(2)
+	winchChan := make(chan os.Signal, 1)
+	signal.Notify(winchChan, syscall.SIGWINCH)
+	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH) // trigger initial resize
+	debouncedWinch := make(chan os.Signal, 1)
+	go func() {
+		defer wg.Done()
+		var timer *time.Timer
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-winchChan:
+				if timer != nil {
+					timer.Stop()
+				}
+				timer = time.AfterFunc(50*time.Millisecond, func() {
+					select {
+					case debouncedWinch <- syscall.SIGWINCH:
+					case <-ctx.Done():
+					}
+				})
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		defer signal.Stop(winchChan)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-debouncedWinch:
+				if w, h, e := term.GetSize(os.Stdout.Fd()); e == nil && w > 0 && h > 0 {
+					_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(h), Cols: uint16(w)})
+				}
+			}
+		}
+	}()
+
+	return doneCh, nil
 }
 
-// FinishAttach restores detached capture mode after interactive attach exits.
-func (m *Manager) FinishAttach(sessionID string) error {
-	rs, err := m.getSession(sessionID)
-	if err != nil {
-		return err
+// detachSession closes the attached PTY, restores a fresh detached PTY,
+// cancels attach goroutines, and signals completion.
+func (m *Manager) detachSession(rs *runtimeSession, ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup, doneCh chan struct{}) {
+	// Close the attached PTY — this causes the io.Copy goroutine to return.
+	if rs.tmuxSession.ptmx != nil {
+		_ = rs.tmuxSession.ptmx.Close()
+		rs.tmuxSession.ptmx = nil
+		rs.tmuxSession.ptmxCmd = nil
 	}
-	defer func() {
-		m.mu.Lock()
-		rs.attaching = false
-		m.mu.Unlock()
-	}()
-	// Remove the temporary global C-q detach binding installed by PrepareAttach.
-	_, _ = runTmux("unbind-key", "-n", "C-q")
-	if err := rs.tmuxSession.Restore(); err != nil {
-		return err
-	}
+
+	// Restore a fresh detached PTY for capture mode.
+	_ = rs.tmuxSession.Restore()
+
+	// Resize back to TUI pane dimensions.
 	m.mu.Lock()
 	cols, rows := m.desiredCols, m.desiredRows
+	rs.attaching = false
 	m.mu.Unlock()
 	if cols > 0 && rows > 0 {
 		_ = rs.tmuxSession.SetDetachedSize(cols, rows)
 	}
-	return nil
+
+	cancel()
+	wg.Wait()
+	close(doneCh)
 }
 
 func (m *Manager) CaptureFull(sessionID string) ([]string, error) {
@@ -273,7 +362,9 @@ func (m *Manager) ResizeAll(width, height int) {
 	m.desiredCols, m.desiredRows = width, height
 	sessions := make([]*runtimeSession, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		sessions = append(sessions, s)
+		if !s.attaching {
+			sessions = append(sessions, s)
+		}
 	}
 	m.mu.Unlock()
 
@@ -327,6 +418,9 @@ func (m *Manager) pollOnce() {
 	m.mu.Lock()
 	items := make([]item, 0, len(m.sessions))
 	for _, s := range m.sessions {
+		if s.attaching {
+			continue // skip sessions in fullscreen attach
+		}
 		items = append(items, item{id: s.id, sess: s.tmuxSession, lastHash: s.lastHash})
 	}
 	m.mu.Unlock()
@@ -385,8 +479,9 @@ func (m *Manager) emit(evt Event) {
 }
 
 type tmuxSession struct {
-	name string
-	ptmx *os.File
+	name    string
+	ptmx    *os.File
+	ptmxCmd *exec.Cmd // the background "tmux attach-session" process backing ptmx
 }
 
 func newTmuxSession(name string) *tmuxSession {
@@ -417,17 +512,18 @@ func (t *tmuxSession) Restore() error {
 	if t.ptmx != nil {
 		// Verify the existing PTY is still valid (tmux server may have crashed).
 		if _, err := t.ptmx.Stat(); err != nil {
-			_ = t.ptmx.Close()
-			t.ptmx = nil
+			t.killDetached()
 		} else {
 			return nil
 		}
 	}
-	ptmx, err := pty.Start(exec.Command("tmux", "attach-session", "-t", "="+t.name))
+	cmd := exec.Command("tmux", "attach-session", "-t", "="+t.name)
+	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return fmt.Errorf("open detached tmux pty: %w", err)
 	}
 	t.ptmx = ptmx
+	t.ptmxCmd = cmd
 	return nil
 }
 
@@ -435,12 +531,23 @@ func (t *tmuxSession) ReleaseDetached() error {
 	if t.ptmx == nil {
 		return nil
 	}
-	err := t.ptmx.Close()
-	t.ptmx = nil
-	if err != nil {
-		return fmt.Errorf("close detached tmux pty: %w", err)
-	}
+	t.killDetached()
 	return nil
+}
+
+// killDetached kills the background "tmux attach-session" process and closes
+// the PTY fd so no stale tmux client remains (which would fight over session
+// size with any new attach client).
+func (t *tmuxSession) killDetached() {
+	if t.ptmxCmd != nil && t.ptmxCmd.Process != nil {
+		_ = t.ptmxCmd.Process.Kill()
+		_ = t.ptmxCmd.Wait()
+	}
+	if t.ptmx != nil {
+		_ = t.ptmx.Close()
+	}
+	t.ptmx = nil
+	t.ptmxCmd = nil
 }
 
 func (t *tmuxSession) Close() error {

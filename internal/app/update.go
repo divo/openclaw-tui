@@ -150,7 +150,7 @@ func Reduce(m Model, incoming tea.Msg) (Model, tea.Cmd) {
 		dims := ui.ComputeDimensions(m.Width, m.Height)
 		// Detached in-pane terminal should match pane dimensions and only update
 		// when effective cols/rows actually change.
-		termW := max(20, m.Width-2)
+		termW := max(20, dims.RightW-2)
 		termH := max(6, dims.TerminalH-2)
 		if m.TerminalPane.Cols == termW && m.TerminalPane.Rows == termH {
 			return m, nil

@@ -6,58 +6,55 @@ import (
 
 type Dimensions struct {
 	BodyH     int
-	TopH      int
-	BottomH   int
 	LeftW     int
 	RightW    int
 	StatusH   int
 	SessionsH int
-	RunH      int
+	TasksH    int
 	ChatH     int
+	RunH      int
 	TerminalH int
 }
 
 func ComputeDimensions(width, height int) Dimensions {
 	bodyH := max(10, height-7)
-	topH := max(6, bodyH/2)
-	bottomH := bodyH - topH
 	leftW := max(24, width/2)
 	rightW := width - leftW
-	statusH := max(3, topH/2)
-	sessionsH := topH - statusH
-	runH := 4
-	terminalH := max(7, bottomH/2)
-	chatH := max(6, bottomH-terminalH-runH)
+
+	// Left column: status, sessions, tasks, chat, run status
+	runH := 3
+	statusH := max(3, bodyH/6)
+	sessionsH := max(3, bodyH/6)
+	tasksH := max(3, bodyH/5)
+	chatH := max(4, bodyH-statusH-sessionsH-tasksH-runH)
+
+	// Right column: terminal takes full height
+	terminalH := bodyH
 
 	return Dimensions{
 		BodyH:     bodyH,
-		TopH:      topH,
-		BottomH:   bottomH,
 		LeftW:     leftW,
 		RightW:    rightW,
 		StatusH:   statusH,
 		SessionsH: sessionsH,
-		RunH:      runH,
+		TasksH:    tasksH,
 		ChatH:     chatH,
+		RunH:      runH,
 		TerminalH: terminalH,
 	}
 }
 
 func FocusLeft(p Pane) Pane {
-	switch p {
-	case PaneTasks:
-		return PaneStatus
-	case PaneChat:
-		return PaneSessions
-	default:
-		return p
+	if p == PaneTerminal {
+		return PaneChat
 	}
+	return p
 }
 
 func FocusRight(p Pane) Pane {
 	switch p {
-	case PaneStatus, PaneSessions:
-		return PaneTasks
+	case PaneStatus, PaneSessions, PaneTasks, PaneChat:
+		return PaneTerminal
 	default:
 		return p
 	}
@@ -67,10 +64,10 @@ func FocusUp(p Pane) Pane {
 	switch p {
 	case PaneSessions:
 		return PaneStatus
-	case PaneChat:
+	case PaneTasks:
 		return PaneSessions
-	case PaneTerminal:
-		return PaneChat
+	case PaneChat:
+		return PaneTasks
 	default:
 		return p
 	}
@@ -80,10 +77,10 @@ func FocusDown(p Pane) Pane {
 	switch p {
 	case PaneStatus:
 		return PaneSessions
-	case PaneSessions, PaneTasks:
+	case PaneSessions:
+		return PaneTasks
+	case PaneTasks:
 		return PaneChat
-	case PaneChat:
-		return PaneTerminal
 	default:
 		return p
 	}
